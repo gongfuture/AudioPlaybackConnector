@@ -8,6 +8,8 @@ winrt::fire_and_forget ConnectDevice(DevicePicker, std::wstring_view);
 void SetupDevicePicker();
 void SetupSvgIcon();
 void UpdateNotifyIcon();
+bool GetStartupStatus();
+void SetStartupStatus(bool status);
 
 int APIENTRY wWinMain(_In_ HINSTANCE hInstance,
 	_In_opt_ HINSTANCE hPrevInstance,
@@ -17,6 +19,14 @@ int APIENTRY wWinMain(_In_ HINSTANCE hInstance,
 	UNREFERENCED_PARAMETER(hPrevInstance);
 	UNREFERENCED_PARAMETER(lpCmdLine);
 	UNREFERENCED_PARAMETER(nCmdShow);
+
+	// Prevent multiple instances
+	CreateMutexW(nullptr, FALSE, L"Local\\AudioPlaybackConnector_Mutex");
+	if (GetLastError() == ERROR_ALREADY_EXISTS)
+	{
+		TaskDialog(nullptr, nullptr, _(L"Already running!"), nullptr, _(L"AudioPlaybackConnector is already running in background.\r\nCheck system tray."), TDCBF_OK_BUTTON, TD_WARNING_ICON, nullptr);
+		return EXIT_FAILURE;
+	}
 
 	g_hInst = hInstance;
 
@@ -117,6 +127,8 @@ LRESULT CALLBACK WndProc(HWND hWnd, UINT message, WPARAM wParam, LPARAM lParam)
 			SaveSettings();
 		}
 		Shell_NotifyIconW(NIM_DELETE, &g_nid);
+		if (g_hIconConnected) { DestroyIcon(g_hIconConnected); g_hIconConnected = nullptr; }
+		if (g_hIconDisconnected) { DestroyIcon(g_hIconDisconnected); g_hIconDisconnected = nullptr; }
 		PostQuitMessage(0);
 		break;
 	case WM_SETTINGCHANGE:
@@ -240,6 +252,29 @@ void SetupMenu()
 		winrt::Windows::System::Launcher::LaunchUriAsync(Uri(L"ms-settings:bluetooth"));
 	});
 
+	FontIcon checkedIcon, uncheckedIcon;
+	checkedIcon.Glyph(L"\xE73E");
+
+	MenuFlyoutItem startupItem;
+	startupItem.Text(_(L"Run at login"));
+	if (GetStartupStatus()) {
+		startupItem.Icon(checkedIcon);
+	}
+	else {
+		startupItem.Icon(uncheckedIcon);
+	}
+	startupItem.Click([checkedIcon, uncheckedIcon](const auto& sender, const auto&) {
+		MenuFlyoutItem self = sender.as<MenuFlyoutItem>();
+		if (GetStartupStatus()) {
+			SetStartupStatus(false);
+			self.Icon(uncheckedIcon);
+		}
+		else {
+			SetStartupStatus(true);
+			self.Icon(checkedIcon);
+		}
+	});
+
 	FontIcon closeIcon;
 	closeIcon.Glyph(L"\xE8BB");
 
@@ -272,6 +307,7 @@ void SetupMenu()
 
 	MenuFlyout menu;
 	menu.Items().Append(settingsItem);
+	menu.Items().Append(startupItem);
 	menu.Items().Append(exitItem);
 	menu.Opened([](const auto& sender, const auto&) {
 		auto menuItems = sender.as<MenuFlyout>().Items();
@@ -312,7 +348,7 @@ winrt::fire_and_forget ConnectDevice(DevicePicker picker, DeviceInformation devi
 						g_devicePicker.SetDisplayStatus(it->second.first, {}, DevicePickerDisplayStatusOptions::None);
 						g_audioPlaybackConnections.erase(it);
 					}
-					sender.Close();
+					UpdateNotifyIcon();
 				}
 			});
 
@@ -367,6 +403,7 @@ winrt::fire_and_forget ConnectDevice(DevicePicker picker, DeviceInformation devi
 	if (success)
 	{
 		picker.SetDisplayStatus(device, _(L"Connected"), DevicePickerDisplayStatusOptions::ShowDisconnectButton);
+		UpdateNotifyIcon();
 	}
 	else
 	{
@@ -377,6 +414,7 @@ winrt::fire_and_forget ConnectDevice(DevicePicker picker, DeviceInformation devi
 			g_audioPlaybackConnections.erase(it);
 		}
 		picker.SetDisplayStatus(device, errorMessage, DevicePickerDisplayStatusOptions::ShowRetryButton);
+		UpdateNotifyIcon();
 	}
 }
 
@@ -407,6 +445,7 @@ void SetupDevicePicker()
 			g_audioPlaybackConnections.erase(it);
 		}
 		sender.SetDisplayStatus(device, {}, DevicePickerDisplayStatusOptions::None);
+		UpdateNotifyIcon();
 	});
 }
 
@@ -427,15 +466,15 @@ void SetupSvgIcon()
 	const std::string_view svg(svgData, size);
 	const int width = GetSystemMetrics(SM_CXSMICON), height = GetSystemMetrics(SM_CYSMICON);
 
-	g_hIconLight = SvgTohIcon(svg, width, height, { 0, 0, 0, 1 });
-	g_hIconDark = SvgTohIcon(svg, width, height, { 1, 1, 1, 1 });
+	// Create green icon for connected state and red icon for disconnected state
+	g_hIconConnected = SvgTohIcon(svg, width, height, { 0.0f, 1.0f, 0.0f, 1.0f });
+	g_hIconDisconnected = SvgTohIcon(svg, width, height, { 1.0f, 0.0f, 0.0f, 1.0f });
 }
 
 void UpdateNotifyIcon()
 {
-	DWORD value = 0, cbValue = sizeof(value);
-	LOG_IF_WIN32_ERROR(RegGetValueW(HKEY_CURRENT_USER, LR"(Software\Microsoft\Windows\CurrentVersion\Themes\Personalize)", L"SystemUsesLightTheme", RRF_RT_REG_DWORD, nullptr, &value, &cbValue));
-	g_nid.hIcon = value != 0 ? g_hIconLight : g_hIconDark;
+	// Set icon based on connection state: green if any connection exists, red otherwise
+	g_nid.hIcon = !g_audioPlaybackConnections.empty() ? g_hIconConnected : g_hIconDisconnected;
 
 	if (!Shell_NotifyIconW(NIM_MODIFY, &g_nid))
 	{
@@ -447,5 +486,54 @@ void UpdateNotifyIcon()
 		{
 			LOG_LAST_ERROR();
 		}
+	}
+}
+
+bool GetStartupStatus()
+{
+	wchar_t pFileName[MAX_PATH] = { 0 };
+	GetModuleFileNameW(NULL, pFileName, MAX_PATH);
+
+	HKEY hKey;
+	if (RegOpenKeyExW(HKEY_CURRENT_USER, L"Software\\Microsoft\\Windows\\CurrentVersion\\Run", 0, KEY_READ, &hKey) == ERROR_SUCCESS)
+	{
+		DWORD pathLength = MAX_PATH * sizeof(wchar_t);
+		wchar_t storedPath[MAX_PATH] = { 0 };
+		RegQueryValueExW(hKey, L"AudioPlaybackConnector", 0, nullptr, (LPBYTE)storedPath, &pathLength);
+
+		RegCloseKey(hKey);
+
+		if (StrCmpW(pFileName, storedPath) == 0)
+		{
+			return true;
+		}
+	}
+
+	return false;
+}
+
+void SetStartupStatus(bool status)
+{
+	wchar_t pFileName[MAX_PATH] = { 0 };
+	GetModuleFileNameW(NULL, pFileName, MAX_PATH);
+
+	HKEY hKey;
+	if (RegOpenKeyExW(HKEY_CURRENT_USER, L"Software\\Microsoft\\Windows\\CurrentVersion\\Run", 0, KEY_WRITE, &hKey) == ERROR_SUCCESS)
+	{
+		if (status)
+		{
+			LSTATUS stat = RegSetValueExW(hKey, L"AudioPlaybackConnector", 0, REG_SZ, (LPBYTE)pFileName, lstrlenW(pFileName) * sizeof(wchar_t));
+			if (stat != ERROR_SUCCESS)
+			{
+				RegCloseKey(hKey);
+				return;
+			}
+		}
+		else
+		{
+			LOG_IF_WIN32_ERROR(RegDeleteValueW(hKey, L"AudioPlaybackConnector"));
+		}
+
+		RegCloseKey(hKey);
 	}
 }
