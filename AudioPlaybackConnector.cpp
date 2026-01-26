@@ -631,7 +631,7 @@ void ShowInitialToastNotification()
 		XmlDocument toastXml;
 		toastXml.LoadXml(toastXmlString);
 
-		ToastNotifier notifier;
+		std::optional<ToastNotifier> notifier;
 		try
 		{
 			notifier = ToastNotificationManager::CreateToastNotifier();
@@ -655,7 +655,7 @@ void ShowInitialToastNotification()
 
 		toast.ExpirationTime(winrt::Windows::Foundation::DateTime::clock::now() + std::chrono::seconds(5));
 
-		notifier.Show(toast);
+		notifier->Show(toast);
 	}
 	catch (winrt::hresult_error const&)
 	{
