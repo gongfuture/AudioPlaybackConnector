@@ -552,7 +552,7 @@ void SetStartupStatus(bool status)
 	{
 		if (status)
 		{
-			LSTATUS stat = RegSetValueExW(hKey, L"AudioPlaybackConnector", 0, REG_SZ, (LPBYTE)pFileName, lstrlenW(pFileName) * sizeof(wchar_t));
+			LSTATUS stat = RegSetValueExW(hKey, L"AudioPlaybackConnector", 0, REG_SZ, (LPBYTE)pFileName, (lstrlenW(pFileName) + 1) * sizeof(wchar_t));
 			if (stat != ERROR_SUCCESS)
 			{
 				RegCloseKey(hKey);
@@ -588,7 +588,7 @@ void ShowInitialToastNotification()
 		XmlDocument toastXml;
 		toastXml.LoadXml(toastXmlString);
 
-		ToastNotifier notifier{ nullptr };
+		ToastNotifier notifier;
 		try
 		{
 			notifier = ToastNotificationManager::CreateToastNotifier();
@@ -606,12 +606,8 @@ void ShowInitialToastNotification()
 			catch (winrt::hresult_error const&)
 			{
 				LOG_CAUGHT_EXCEPTION();
+				return;
 			}
-		}
-
-		if (!notifier)
-		{
-			return;
 		}
 
 		ToastNotification toast(toastXml);
