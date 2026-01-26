@@ -22,9 +22,14 @@ int APIENTRY wWinMain(_In_ HINSTANCE hInstance,
 	UNREFERENCED_PARAMETER(nCmdShow);
 
 	// Prevent multiple instances
-	CreateMutexW(nullptr, FALSE, L"Local\\AudioPlaybackConnector_Mutex");
+	g_hMutex = CreateMutexW(nullptr, FALSE, L"Local\\AudioPlaybackConnector_Mutex");
 	if (GetLastError() == ERROR_ALREADY_EXISTS)
 	{
+		if (g_hMutex)
+		{
+			CloseHandle(g_hMutex);
+			g_hMutex = nullptr;
+		}
 		TaskDialog(nullptr, nullptr, _(L"Already running!"), nullptr, _(L"AudioPlaybackConnector is already running in background.\r\nCheck system tray."), TDCBF_OK_BUTTON, TD_WARNING_ICON, nullptr);
 		return EXIT_FAILURE;
 	}
@@ -135,6 +140,7 @@ LRESULT CALLBACK WndProc(HWND hWnd, UINT message, WPARAM wParam, LPARAM lParam)
 		Shell_NotifyIconW(NIM_DELETE, &g_nid);
 		if (g_hIconConnected) { DestroyIcon(g_hIconConnected); g_hIconConnected = nullptr; }
 		if (g_hIconDisconnected) { DestroyIcon(g_hIconDisconnected); g_hIconDisconnected = nullptr; }
+		if (g_hMutex) { CloseHandle(g_hMutex); g_hMutex = nullptr; }
 		PostQuitMessage(0);
 		break;
 	case WM_SETTINGCHANGE:
@@ -527,13 +533,14 @@ bool GetStartupStatus()
 	HKEY hKey;
 	if (RegOpenKeyExW(HKEY_CURRENT_USER, L"Software\\Microsoft\\Windows\\CurrentVersion\\Run", 0, KEY_READ, &hKey) == ERROR_SUCCESS)
 	{
-		DWORD pathLength = MAX_PATH * sizeof(wchar_t);
+		DWORD pathLength = MAX_PATH;
 		wchar_t storedPath[MAX_PATH] = { 0 };
-		LSTATUS result = RegQueryValueExW(hKey, L"AudioPlaybackConnector", 0, nullptr, (LPBYTE)storedPath, &pathLength);
+		DWORD type = REG_SZ;
+		LSTATUS result = RegQueryValueExW(hKey, L"AudioPlaybackConnector", 0, &type, (LPBYTE)storedPath, &pathLength);
 
 		RegCloseKey(hKey);
 
-		if (result == ERROR_SUCCESS && StrCmpW(pFileName, storedPath) == 0)
+		if (result == ERROR_SUCCESS && type == REG_SZ && StrCmpW(pFileName, storedPath) == 0)
 		{
 			return true;
 		}
@@ -596,9 +603,7 @@ void ShowInitialToastNotification()
 		catch (winrt::hresult_error const&)
 		{
 			LOG_CAUGHT_EXCEPTION();
-			wchar_t exePath[MAX_PATH];
-			GetModuleFileNameW(NULL, exePath, MAX_PATH);
-			std::wstring appId = exePath;
+			std::wstring appId = GetModuleFsPath(g_hInst).wstring();
 			try
 			{
 				notifier = ToastNotificationManager::CreateToastNotifier(appId);
