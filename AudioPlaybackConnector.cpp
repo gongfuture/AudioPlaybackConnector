@@ -529,11 +529,11 @@ bool GetStartupStatus()
 	{
 		DWORD pathLength = MAX_PATH * sizeof(wchar_t);
 		wchar_t storedPath[MAX_PATH] = { 0 };
-		RegQueryValueExW(hKey, L"AudioPlaybackConnector", 0, nullptr, (LPBYTE)storedPath, &pathLength);
+		LSTATUS result = RegQueryValueExW(hKey, L"AudioPlaybackConnector", 0, nullptr, (LPBYTE)storedPath, &pathLength);
 
 		RegCloseKey(hKey);
 
-		if (StrCmpW(pFileName, storedPath) == 0)
+		if (result == ERROR_SUCCESS && StrCmpW(pFileName, storedPath) == 0)
 		{
 			return true;
 		}
@@ -612,8 +612,7 @@ void ShowInitialToastNotification()
 
 		ToastNotification toast(toastXml);
 
-		using namespace std::chrono;
-		toast.ExpirationTime(winrt::Windows::Foundation::DateTime::clock::now() + seconds(5));
+		toast.ExpirationTime(winrt::Windows::Foundation::DateTime::clock::now() + std::chrono::seconds(5));
 
 		notifier.Show(toast);
 	}
@@ -623,5 +622,6 @@ void ShowInitialToastNotification()
 	}
 	catch (std::exception const&)
 	{
+		// Silently ignore standard exceptions from toast notification - this is not critical functionality
 	}
 }
