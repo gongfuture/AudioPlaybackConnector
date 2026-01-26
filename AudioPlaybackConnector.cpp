@@ -534,8 +534,8 @@ bool GetStartupStatus()
 	HKEY hKey;
 	if (RegOpenKeyExW(HKEY_CURRENT_USER, L"Software\\Microsoft\\Windows\\CurrentVersion\\Run", 0, KEY_READ, &hKey) == ERROR_SUCCESS)
 	{
-		DWORD pathLength = MAX_PATH * sizeof(wchar_t);
 		wchar_t storedPath[MAX_PATH] = { 0 };
+		DWORD pathLength = sizeof(storedPath);
 		DWORD type = REG_SZ;
 		LSTATUS result = RegQueryValueExW(hKey, L"AudioPlaybackConnector", 0, &type, (LPBYTE)storedPath, &pathLength);
 
@@ -604,10 +604,10 @@ void ShowInitialToastNotification()
 		catch (winrt::hresult_error const&)
 		{
 			LOG_CAUGHT_EXCEPTION();
-			std::wstring appId = GetModuleFsPath(g_hInst).wstring();
+			// Fallback to using a simple application identifier
 			try
 			{
-				notifier = ToastNotificationManager::CreateToastNotifier(appId);
+				notifier = ToastNotificationManager::CreateToastNotifier(L"AudioPlaybackConnector");
 			}
 			catch (winrt::hresult_error const&)
 			{
