@@ -44,16 +44,11 @@
 #include <winrt/Windows.Foundation.Collections.h>
 #include <winrt/Windows.Foundation.Metadata.h>
 #include <winrt/Windows.Media.Audio.h>
-#include <winrt/Windows.Media.Devices.h>
-#include <winrt/Windows.Media.Render.h>
-#include <winrt/Windows.Media.Capture.h>
 #include <winrt/Windows.System.h>
 #include <winrt/Windows.UI.Xaml.Controls.h>
 #include <winrt/Windows.UI.Xaml.Controls.Primitives.h>
 #include <winrt/Windows.UI.Xaml.Hosting.h>
 #include <windows.ui.xaml.hosting.desktopwindowxamlsource.h>
 #include <winrt/Windows.UI.Xaml.Markup.h>
-#include <winrt/Windows.UI.Notifications.h>
-#include <winrt/Windows.Data.Xml.Dom.h>
 
 #endif //PCH_H

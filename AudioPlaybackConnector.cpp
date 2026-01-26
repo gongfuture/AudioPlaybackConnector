@@ -8,12 +8,6 @@ winrt::fire_and_forget ConnectDevice(DevicePicker, std::wstring_view);
 void SetupDevicePicker();
 void SetupSvgIcon();
 void UpdateNotifyIcon();
-bool GetStartupStatus();
-void SetStartupStatus(bool status);
-void ShowInitialToastNotification();
-winrt::fire_and_forget SetupAudioRouting(std::wstring deviceId, std::wstring deviceName);
-void StopAudioRouting(std::wstring deviceId);
-winrt::fire_and_forget ListAudioDevices();
 
 int APIENTRY wWinMain(_In_ HINSTANCE hInstance,
 	_In_opt_ HINSTANCE hPrevInstance,
@@ -23,19 +17,6 @@ int APIENTRY wWinMain(_In_ HINSTANCE hInstance,
 	UNREFERENCED_PARAMETER(hPrevInstance);
 	UNREFERENCED_PARAMETER(lpCmdLine);
 	UNREFERENCED_PARAMETER(nCmdShow);
-
-	// Prevent multiple instances
-	g_hMutex = CreateMutexW(nullptr, FALSE, L"Local\\AudioPlaybackConnector_Mutex");
-	if (GetLastError() == ERROR_ALREADY_EXISTS)
-	{
-		if (g_hMutex)
-		{
-			CloseHandle(g_hMutex);
-			g_hMutex = nullptr;
-		}
-		TaskDialog(nullptr, nullptr, _(L"Already running!"), nullptr, _(L"AudioPlaybackConnector is already running in background.\r\nCheck system tray."), TDCBF_OK_BUTTON, TD_WARNING_ICON, nullptr);
-		return EXIT_FAILURE;
-	}
 
 	g_hInst = hInstance;
 
@@ -100,11 +81,6 @@ int APIENTRY wWinMain(_In_ HINSTANCE hInstance,
 
 	PostMessageW(g_hWnd, WM_CONNECTDEVICE, 0, 0);
 
-	if (g_showNotification)
-	{
-		ShowInitialToastNotification();
-	}
-
 	MSG msg;
 	while (GetMessageW(&msg, nullptr, 0, 0))
 	{
@@ -125,15 +101,6 @@ LRESULT CALLBACK WndProc(HWND hWnd, UINT message, WPARAM wParam, LPARAM lParam)
 	switch (message)
 	{
 	case WM_DESTROY:
-		// Stop all audio graphs first
-		for (auto& [deviceId, audioGraph] : g_audioGraphs)
-		{
-			auto& [graph, inputNode, outputNode] = audioGraph;
-			graph.Stop();
-			graph.Close();
-		}
-		g_audioGraphs.clear();
-		
 		for (const auto& connection : g_audioPlaybackConnections)
 		{
 			connection.second.second.Close();
@@ -150,9 +117,6 @@ LRESULT CALLBACK WndProc(HWND hWnd, UINT message, WPARAM wParam, LPARAM lParam)
 			SaveSettings();
 		}
 		Shell_NotifyIconW(NIM_DELETE, &g_nid);
-		if (g_hIconConnected) { DestroyIcon(g_hIconConnected); g_hIconConnected = nullptr; }
-		if (g_hIconDisconnected) { DestroyIcon(g_hIconDisconnected); g_hIconDisconnected = nullptr; }
-		if (g_hMutex) { CloseHandle(g_hMutex); g_hMutex = nullptr; }
 		PostQuitMessage(0);
 		break;
 	case WM_SETTINGCHANGE:
@@ -276,63 +240,6 @@ void SetupMenu()
 		winrt::Windows::System::Launcher::LaunchUriAsync(Uri(L"ms-settings:bluetooth"));
 	});
 
-	FontIcon checkedIcon, uncheckedIcon;
-	checkedIcon.Glyph(L"\xE73E");
-
-	MenuFlyoutItem startupItem;
-	startupItem.Text(_(L"Run at login"));
-	if (GetStartupStatus()) {
-		startupItem.Icon(checkedIcon);
-	}
-	else {
-		startupItem.Icon(uncheckedIcon);
-	}
-	startupItem.Click([checkedIcon, uncheckedIcon](const auto& sender, const auto&) {
-		MenuFlyoutItem self = sender.as<MenuFlyoutItem>();
-		if (GetStartupStatus()) {
-			SetStartupStatus(false);
-			self.Icon(uncheckedIcon);
-		}
-		else {
-			SetStartupStatus(true);
-			self.Icon(checkedIcon);
-		}
-	});
-
-	FontIcon notificationCheckedIcon, notificationUncheckedIcon;
-	notificationCheckedIcon.Glyph(L"\xE73E");
-
-	MenuFlyoutItem notificationItem;
-	notificationItem.Text(_(L"Show startup notification"));
-	if (g_showNotification) {
-		notificationItem.Icon(notificationCheckedIcon);
-	}
-	else {
-		notificationItem.Icon(notificationUncheckedIcon);
-	}
-	notificationItem.Click([notificationCheckedIcon, notificationUncheckedIcon](const auto& sender, const auto&) {
-		MenuFlyoutItem self = sender.as<MenuFlyoutItem>();
-		g_showNotification = !g_showNotification;
-		if (g_showNotification) {
-			self.Icon(notificationCheckedIcon);
-		}
-		else {
-			self.Icon(notificationUncheckedIcon);
-		}
-		SaveSettings();
-	});
-
-	// Audio Devices menu item
-	FontIcon audioIcon;
-	audioIcon.Glyph(L"\xE7F5");  // Speaker icon
-
-	MenuFlyoutItem audioDevicesItem;
-	audioDevicesItem.Text(_(L"List Audio Devices"));
-	audioDevicesItem.Icon(audioIcon);
-	audioDevicesItem.Click([](const auto&, const auto&) {
-		ListAudioDevices();
-	});
-
 	FontIcon closeIcon;
 	closeIcon.Glyph(L"\xE8BB");
 
@@ -365,9 +272,6 @@ void SetupMenu()
 
 	MenuFlyout menu;
 	menu.Items().Append(settingsItem);
-	menu.Items().Append(startupItem);
-	menu.Items().Append(notificationItem);
-	menu.Items().Append(audioDevicesItem);
 	menu.Items().Append(exitItem);
 	menu.Opened([](const auto& sender, const auto&) {
 		auto menuItems = sender.as<MenuFlyout>().Items();
@@ -402,19 +306,13 @@ winrt::fire_and_forget ConnectDevice(DevicePicker picker, DeviceInformation devi
 			connection.StateChanged([](const auto& sender, const auto&) {
 				if (sender.State() == AudioPlaybackConnectionState::Closed)
 				{
-					std::wstring deviceId(sender.DeviceId());
-					// Stop audio routing for this device
-					StopAudioRouting(deviceId);
-					
-					auto it = g_audioPlaybackConnections.find(deviceId);
+					auto it = g_audioPlaybackConnections.find(std::wstring(sender.DeviceId()));
 					if (it != g_audioPlaybackConnections.end())
 					{
 						g_devicePicker.SetDisplayStatus(it->second.first, {}, DevicePickerDisplayStatusOptions::None);
 						g_audioPlaybackConnections.erase(it);
 					}
-					// Note: sender.Close() removed here as it's already closed when state is Closed
-					// Calling Close() again could cause issues. Cleanup happens via erase above.
-					UpdateNotifyIcon();
+					sender.Close();
 				}
 			});
 
@@ -469,9 +367,6 @@ winrt::fire_and_forget ConnectDevice(DevicePicker picker, DeviceInformation devi
 	if (success)
 	{
 		picker.SetDisplayStatus(device, _(L"Connected"), DevicePickerDisplayStatusOptions::ShowDisconnectButton);
-		// Set up audio routing to configured output device
-		SetupAudioRouting(std::wstring(device.Id()), std::wstring(device.Name()));
-		UpdateNotifyIcon();
 	}
 	else
 	{
@@ -482,7 +377,6 @@ winrt::fire_and_forget ConnectDevice(DevicePicker picker, DeviceInformation devi
 			g_audioPlaybackConnections.erase(it);
 		}
 		picker.SetDisplayStatus(device, errorMessage, DevicePickerDisplayStatusOptions::ShowRetryButton);
-		UpdateNotifyIcon();
 	}
 }
 
@@ -506,19 +400,13 @@ void SetupDevicePicker()
 	});
 	g_devicePicker.DisconnectButtonClicked([](const auto& sender, const auto& args) {
 		auto device = args.Device();
-		std::wstring deviceId(device.Id());
-		
-		// Stop audio routing for this device
-		StopAudioRouting(deviceId);
-		
-		auto it = g_audioPlaybackConnections.find(deviceId);
+		auto it = g_audioPlaybackConnections.find(std::wstring(device.Id()));
 		if (it != g_audioPlaybackConnections.end())
 		{
 			it->second.second.Close();
 			g_audioPlaybackConnections.erase(it);
 		}
 		sender.SetDisplayStatus(device, {}, DevicePickerDisplayStatusOptions::None);
-		UpdateNotifyIcon();
 	});
 }
 
@@ -539,15 +427,15 @@ void SetupSvgIcon()
 	const std::string_view svg(svgData, size);
 	const int width = GetSystemMetrics(SM_CXSMICON), height = GetSystemMetrics(SM_CYSMICON);
 
-	// Create green icon for connected state and red icon for disconnected state
-	g_hIconConnected = SvgTohIcon(svg, width, height, { 0.0f, 1.0f, 0.0f, 1.0f });
-	g_hIconDisconnected = SvgTohIcon(svg, width, height, { 1.0f, 0.0f, 0.0f, 1.0f });
+	g_hIconLight = SvgTohIcon(svg, width, height, { 0, 0, 0, 1 });
+	g_hIconDark = SvgTohIcon(svg, width, height, { 1, 1, 1, 1 });
 }
 
 void UpdateNotifyIcon()
 {
-	// Set icon based on connection state: green if any connection exists, red otherwise
-	g_nid.hIcon = !g_audioPlaybackConnections.empty() ? g_hIconConnected : g_hIconDisconnected;
+	DWORD value = 0, cbValue = sizeof(value);
+	LOG_IF_WIN32_ERROR(RegGetValueW(HKEY_CURRENT_USER, LR"(Software\Microsoft\Windows\CurrentVersion\Themes\Personalize)", L"SystemUsesLightTheme", RRF_RT_REG_DWORD, nullptr, &value, &cbValue));
+	g_nid.hIcon = value != 0 ? g_hIconLight : g_hIconDark;
 
 	if (!Shell_NotifyIconW(NIM_MODIFY, &g_nid))
 	{
@@ -560,288 +448,4 @@ void UpdateNotifyIcon()
 			LOG_LAST_ERROR();
 		}
 	}
-}
-
-bool GetStartupStatus()
-{
-	auto exePath = GetModuleFsPath(g_hInst);
-
-	HKEY hKey;
-	if (RegOpenKeyExW(HKEY_CURRENT_USER, L"Software\\Microsoft\\Windows\\CurrentVersion\\Run", 0, KEY_READ, &hKey) == ERROR_SUCCESS)
-	{
-		wchar_t storedPath[MAX_PATH] = { 0 };
-		DWORD pathLength = sizeof(storedPath);
-		DWORD type = REG_SZ;
-		LSTATUS result = RegQueryValueExW(hKey, L"AudioPlaybackConnector", 0, &type, (LPBYTE)storedPath, &pathLength);
-
-		RegCloseKey(hKey);
-
-		if (result == ERROR_SUCCESS && type == REG_SZ && exePath == storedPath)
-		{
-			return true;
-		}
-	}
-
-	return false;
-}
-
-void SetStartupStatus(bool status)
-{
-	auto exePath = GetModuleFsPath(g_hInst);
-
-	HKEY hKey;
-	if (RegOpenKeyExW(HKEY_CURRENT_USER, L"Software\\Microsoft\\Windows\\CurrentVersion\\Run", 0, KEY_WRITE, &hKey) == ERROR_SUCCESS)
-	{
-		if (status)
-		{
-			auto exePathStr = exePath.wstring();
-			LSTATUS stat = RegSetValueExW(hKey, L"AudioPlaybackConnector", 0, REG_SZ, (LPBYTE)exePathStr.c_str(), (lstrlenW(exePathStr.c_str()) + 1) * sizeof(wchar_t));
-			if (stat != ERROR_SUCCESS)
-			{
-				RegCloseKey(hKey);
-				return;
-			}
-		}
-		else
-		{
-			LOG_IF_WIN32_ERROR(RegDeleteValueW(hKey, L"AudioPlaybackConnector"));
-		}
-
-		RegCloseKey(hKey);
-	}
-}
-
-void ShowInitialToastNotification()
-{
-	try
-	{
-		std::wstring title = _(L"AudioPlaybackConnector");
-		std::wstring message = _(L"Application has started and is running in the notification area.");
-
-		std::wstring toastXmlString =
-			L"<toast>"
-			L"<visual>"
-			L"<binding template=\"ToastGeneric\">"
-			L"<text>" + title + L"</text>"
-			L"<text>" + message + L"</text>"
-			L"</binding>"
-			L"</visual>"
-			L"</toast>";
-
-		XmlDocument toastXml;
-		toastXml.LoadXml(toastXmlString);
-
-		ToastNotifier notifier;
-		try
-		{
-			notifier = ToastNotificationManager::CreateToastNotifier();
-		}
-		catch (winrt::hresult_error const&)
-		{
-			LOG_CAUGHT_EXCEPTION();
-			// Fallback to using a simple application identifier
-			try
-			{
-				notifier = ToastNotificationManager::CreateToastNotifier(L"AudioPlaybackConnector");
-			}
-			catch (winrt::hresult_error const&)
-			{
-				LOG_CAUGHT_EXCEPTION();
-				return;
-			}
-		}
-
-		ToastNotification toast(toastXml);
-
-		toast.ExpirationTime(winrt::Windows::Foundation::DateTime::clock::now() + std::chrono::seconds(5));
-
-		notifier.Show(toast);
-	}
-	catch (winrt::hresult_error const&)
-	{
-		LOG_CAUGHT_EXCEPTION();
-	}
-	catch (std::exception const&)
-	{
-		// Silently ignore standard exceptions from toast notification - this is not critical functionality
-	}
-}
-
-// Find a device by name (partial match allowed)
-winrt::Windows::Foundation::IAsyncOperation<DeviceInformation> FindAudioRenderDevice(std::wstring_view deviceName)
-{
-	auto selector = winrt::Windows::Media::Devices::MediaDevice::GetAudioRenderSelector();
-	auto devices = co_await DeviceInformation::FindAllAsync(selector);
-	
-	for (const auto& device : devices)
-	{
-		// Check if the device name contains the search string
-		std::wstring name(device.Name());
-		if (name.find(deviceName) != std::wstring::npos)
-		{
-			co_return device;
-		}
-	}
-	co_return nullptr;
-}
-
-// Find the A2DP audio input device for a connected Bluetooth device
-winrt::Windows::Foundation::IAsyncOperation<DeviceInformation> FindA2dpInputDevice(std::wstring_view bluetoothDeviceName)
-{
-	constexpr std::wstring_view A2DP_DEVICE_IDENTIFIER = L"A2DP";
-	
-	auto selector = winrt::Windows::Media::Devices::MediaDevice::GetAudioCaptureSelector();
-	auto devices = co_await DeviceInformation::FindAllAsync(selector);
-	
-	for (const auto& device : devices)
-	{
-		std::wstring name(device.Name());
-		// A2DP devices typically have "A2DP SNK" in their name
-		if (name.find(A2DP_DEVICE_IDENTIFIER) != std::wstring::npos || name.find(bluetoothDeviceName) != std::wstring::npos)
-		{
-			co_return device;
-		}
-	}
-	co_return nullptr;
-}
-
-// Set up audio routing from A2DP input device to the configured output device
-winrt::fire_and_forget SetupAudioRouting(std::wstring deviceId, std::wstring deviceName)
-{
-	constexpr auto A2DP_DEVICE_READY_DELAY = std::chrono::milliseconds(1000);
-	
-	// Only set up routing if a custom output device is configured
-	if (g_audioOutputDevice.empty())
-	{
-		co_return;
-	}
-
-	try
-	{
-		// Small delay to allow the A2DP virtual device to become available
-		co_await winrt::resume_after(A2DP_DEVICE_READY_DELAY);
-
-		// Find the A2DP input device
-		auto inputDevice = co_await FindA2dpInputDevice(deviceName);
-		if (!inputDevice)
-		{
-			LOG_HR_MSG(E_FAIL, "Could not find A2DP input device for: %ls", deviceName.c_str());
-			co_return;
-		}
-
-		// Find the configured output device
-		auto outputDevice = co_await FindAudioRenderDevice(g_audioOutputDevice);
-		if (!outputDevice)
-		{
-			LOG_HR_MSG(E_FAIL, "Could not find audio output device: %ls", g_audioOutputDevice.c_str());
-			co_return;
-		}
-
-		// Create audio graph settings with the output device
-		AudioGraphSettings settings(winrt::Windows::Media::Render::AudioRenderCategory::Media);
-		settings.PrimaryRenderDevice(outputDevice);
-
-		// Create the audio graph
-		auto graphResult = co_await AudioGraph::CreateAsync(settings);
-		if (graphResult.Status() != AudioGraphCreationStatus::Success)
-		{
-			LOG_HR_MSG(E_FAIL, "Failed to create AudioGraph: %d", static_cast<int>(graphResult.Status()));
-			co_return;
-		}
-
-		auto graph = graphResult.Graph();
-
-		// Create device input node from the A2DP device
-		auto inputResult = co_await graph.CreateDeviceInputNodeAsync(
-			winrt::Windows::Media::Capture::MediaCategory::Media,
-			graph.EncodingProperties(),
-			inputDevice);
-
-		if (inputResult.Status() != AudioDeviceNodeCreationStatus::Success)
-		{
-			LOG_HR_MSG(E_FAIL, "Failed to create input node: %d", static_cast<int>(inputResult.Status()));
-			graph.Close();
-			co_return;
-		}
-
-		auto inputNode = inputResult.DeviceInputNode();
-
-		// Create device output node
-		auto outputResult = co_await graph.CreateDeviceOutputNodeAsync();
-		if (outputResult.Status() != AudioDeviceNodeCreationStatus::Success)
-		{
-			LOG_HR_MSG(E_FAIL, "Failed to create output node: %d", static_cast<int>(outputResult.Status()));
-			graph.Close();
-			co_return;
-		}
-
-		auto outputNode = outputResult.DeviceOutputNode();
-
-		// Connect input to output
-		inputNode.AddOutgoingConnection(outputNode);
-
-		// Store the graph for cleanup later
-		g_audioGraphs.emplace(deviceId, std::make_tuple(graph, inputNode, outputNode));
-
-		// Start the audio graph
-		graph.Start();
-	}
-	catch (winrt::hresult_error const& ex)
-	{
-		LOG_HR_MSG(ex.code(), "Audio routing setup failed: %ls", ex.message().c_str());
-	}
-}
-
-// Stop audio routing for a device
-void StopAudioRouting(std::wstring deviceId)
-{
-	auto it = g_audioGraphs.find(deviceId);
-	if (it != g_audioGraphs.end())
-	{
-		auto& [graph, inputNode, outputNode] = it->second;
-		graph.Stop();
-		graph.Close();
-		g_audioGraphs.erase(it);
-	}
-}
-
-// List all available audio devices (for config file reference)
-winrt::fire_and_forget ListAudioDevices()
-{
-	try
-	{
-		std::wstring message = L"=== Audio Output Devices ===\n\n";
-
-		auto renderSelector = winrt::Windows::Media::Devices::MediaDevice::GetAudioRenderSelector();
-		auto renderDevices = co_await DeviceInformation::FindAllAsync(renderSelector);
-		
-		message += L"Output Devices (speakers/headphones):\n";
-		for (const auto& device : renderDevices)
-		{
-			message += L"  • ";
-			message += device.Name();
-			message += L"\n";
-		}
-
-		message += L"\n=== Audio Input Devices ===\n\n";
-
-		auto captureSelector = winrt::Windows::Media::Devices::MediaDevice::GetAudioCaptureSelector();
-		auto captureDevices = co_await DeviceInformation::FindAllAsync(captureSelector);
-		
-		message += L"Input Devices (microphones/A2DP sources):\n";
-		for (const auto& device : captureDevices)
-		{
-			message += L"  • ";
-			message += device.Name();
-			message += L"\n";
-		}
-
-		message += L"\nTo set output device, add to AudioPlaybackConnector.json:\n";
-		message += L"\"audioOutputDevice\": \"<device name or partial name>\"\n";
-		message += L"\nExample:\n";
-		message += L"\"audioOutputDevice\": \"Speakers (Realtek Audio)\"\n";
-
-		MessageBoxW(nullptr, message.c_str(), L"AudioPlaybackConnector - Available Audio Devices", MB_OK | MB_ICONINFORMATION);
-	}
-	CATCH_LOG();
 }

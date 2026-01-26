@@ -6,9 +6,7 @@ constexpr auto BUFFER_SIZE = 4096;
 void DefaultSettings()
 {
 	g_reconnect = false;
-	g_showNotification = true;
 	g_lastDevices.clear();
-	g_audioOutputDevice.clear();
 }
 
 void LoadSettings()
@@ -35,9 +33,6 @@ void LoadSettings()
 		std::wstring utf16 = Utf8ToUtf16(string);
 		auto jsonObj = JsonObject::Parse(utf16);
 		g_reconnect = jsonObj.Lookup(L"reconnect").GetBoolean();
-		
-		if (jsonObj.HasKey(L"showNotification"))
-			g_showNotification = jsonObj.Lookup(L"showNotification").GetBoolean();
 
 		auto lastDevices = jsonObj.Lookup(L"lastDevices").GetArray();
 		g_lastDevices.reserve(lastDevices.Size());
@@ -45,14 +40,6 @@ void LoadSettings()
 		{
 			if (i.ValueType() == JsonValueType::String)
 				g_lastDevices.push_back(std::wstring(i.GetString()));
-		}
-
-		// Load audio output device setting (optional)
-		if (jsonObj.HasKey(L"audioOutputDevice"))
-		{
-			auto audioDevice = jsonObj.Lookup(L"audioOutputDevice");
-			if (audioDevice.ValueType() == JsonValueType::String)
-				g_audioOutputDevice = audioDevice.GetString();
 		}
 	}
 	CATCH_LOG();
@@ -64,7 +51,6 @@ void SaveSettings()
 	{
 		JsonObject jsonObj;
 		jsonObj.Insert(L"reconnect", JsonValue::CreateBooleanValue(g_reconnect));
-		jsonObj.Insert(L"showNotification", JsonValue::CreateBooleanValue(g_showNotification));
 
 		JsonArray lastDevices;
 		for (const auto& i : g_audioPlaybackConnections)
@@ -72,12 +58,6 @@ void SaveSettings()
 			lastDevices.Append(JsonValue::CreateStringValue(i.first));
 		}
 		jsonObj.Insert(L"lastDevices", lastDevices);
-
-		// Save audio output device setting
-		if (!g_audioOutputDevice.empty())
-		{
-			jsonObj.Insert(L"audioOutputDevice", JsonValue::CreateStringValue(g_audioOutputDevice));
-		}
 
 		wil::unique_hfile hFile(CreateFileW((GetModuleFsPath(g_hInst).remove_filename() / CONFIG_NAME).c_str(), GENERIC_WRITE, FILE_SHARE_READ, nullptr, CREATE_ALWAYS, FILE_ATTRIBUTE_NORMAL, nullptr));
 		THROW_LAST_ERROR_IF(!hFile);

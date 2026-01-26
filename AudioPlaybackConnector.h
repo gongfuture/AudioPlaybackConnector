@@ -9,14 +9,11 @@ using namespace winrt::Windows::Media::Audio;
 using namespace winrt::Windows::UI::Xaml;
 using namespace winrt::Windows::UI::Xaml::Controls;
 using namespace winrt::Windows::UI::Xaml::Hosting;
-using namespace winrt::Windows::UI::Notifications;
-using namespace winrt::Windows::Data::Xml::Dom;
 namespace fs = std::filesystem;
 
 constexpr UINT WM_NOTIFYICON = WM_APP + 1;
 constexpr UINT WM_CONNECTDEVICE = WM_APP + 2;
 
-HANDLE g_hMutex = nullptr;
 HINSTANCE g_hInst;
 HWND g_hWnd;
 HWND g_hWndXaml;
@@ -26,8 +23,8 @@ MenuFlyout g_xamlMenu = nullptr;
 FocusState g_menuFocusState = FocusState::Unfocused;
 DevicePicker g_devicePicker = nullptr;
 std::unordered_map<std::wstring, std::pair<DeviceInformation, AudioPlaybackConnection>> g_audioPlaybackConnections;
-HICON g_hIconConnected = nullptr;
-HICON g_hIconDisconnected = nullptr;
+HICON g_hIconLight = nullptr;
+HICON g_hIconDark = nullptr;
 NOTIFYICONDATAW g_nid = {
 	.cbSize = sizeof(g_nid),
 	.uFlags = NIF_MESSAGE | NIF_ICON | NIF_TIP | NIF_SHOWTIP,
@@ -39,10 +36,7 @@ NOTIFYICONIDENTIFIER g_niid = {
 };
 UINT WM_TASKBAR_CREATED = 0;
 bool g_reconnect = false;
-bool g_showNotification = true;
 std::vector<std::wstring> g_lastDevices;
-std::wstring g_audioOutputDevice;  // Device name/ID for audio output (empty = default)
-std::unordered_map<std::wstring, std::tuple<AudioGraph, AudioDeviceInputNode, AudioDeviceOutputNode>> g_audioGraphs;  // Audio routing graphs per A2DP device
 
 #include "Util.hpp"
 #include "I18n.hpp"
