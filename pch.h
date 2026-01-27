@@ -7,6 +7,18 @@
 #ifndef PCH_H
 #define PCH_H
 
+// Disable warning C4819 which occurs when a source file contains characters
+// that are not representable in the current code page. The repository files
+// are UTF-8; suppressing this warning prevents builds that treat warnings as
+// errors from failing. (See MSVC warning C4819)
+#pragma warning(disable:4819)
+
+// Disable warning C4864 which is emitted by MSVC when generated code
+// references a dependent template name without the 'template' keyword. This
+// arises in some C++/WinRT generated lambdas and is not a correctness issue
+// for this project. Suppress it to avoid /WX (warnings-as-errors) failures.
+#pragma warning(disable:4864)
+
 #include "targetver.h"
 
 // Windows Header Files

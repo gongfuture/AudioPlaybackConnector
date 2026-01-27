@@ -1,3 +1,4 @@
+#pragma warning(disable:4819)
 #include "pch.h"
 #include "AudioPlaybackConnector.h"
 
@@ -619,7 +620,7 @@ void ShowInitialToastNotification()
 		std::wstring message = _(L"Application has started and is running in the notification area.");
 
 		std::wstring toastXmlString =
-			L"<toast>"
+			L"<toast activationType=\"protocol\" launch=\"audioplaybackconnector:show\">" 
 			L"<visual>"
 			L"<binding template=\"ToastGeneric\">"
 			L"<text>" + title + L"</text>"
@@ -631,7 +632,7 @@ void ShowInitialToastNotification()
 		XmlDocument toastXml;
 		toastXml.LoadXml(toastXmlString);
 
-		ToastNotifier notifier;
+		ToastNotifier notifier{ nullptr };
 		try
 		{
 			notifier = ToastNotificationManager::CreateToastNotifier();
@@ -639,16 +640,23 @@ void ShowInitialToastNotification()
 		catch (winrt::hresult_error const&)
 		{
 			LOG_CAUGHT_EXCEPTION();
-			// Fallback to using a simple application identifier
+			wchar_t exePath[MAX_PATH];
+			GetModuleFileNameW(NULL, exePath, MAX_PATH);
+			std::wstring appId = exePath;
 			try
 			{
-				notifier = ToastNotificationManager::CreateToastNotifier(L"AudioPlaybackConnector");
+				notifier = ToastNotificationManager::CreateToastNotifier(appId);
 			}
 			catch (winrt::hresult_error const&)
 			{
 				LOG_CAUGHT_EXCEPTION();
 				return;
 			}
+		}
+
+		if (!notifier)
+		{
+			return;
 		}
 
 		ToastNotification toast(toastXml);

@@ -1,0 +1,8 @@
+<Project>
+  <ItemDefinitionGroup>
+    <ClCompile>
+      <!-- Force compiler to treat source files as UTF-8 to avoid C4819 on non-ANSI locales -->
+      <AdditionalOptions>%(AdditionalOptions) /utf-8</AdditionalOptions>
+    </ClCompile>
+  </ItemDefinitionGroup>
+</Project>
