@@ -12,9 +12,6 @@ void UpdateNotifyIcon();
 bool GetStartupStatus();
 void SetStartupStatus(bool status);
 void ShowInitialToastNotification();
-winrt::fire_and_forget SetupAudioRouting(std::wstring deviceId, std::wstring deviceName);
-void StopAudioRouting(std::wstring deviceId);
-winrt::fire_and_forget ListAudioDevices();
 
 int APIENTRY wWinMain(_In_ HINSTANCE hInstance,
 	_In_opt_ HINSTANCE hPrevInstance,
@@ -126,15 +123,6 @@ LRESULT CALLBACK WndProc(HWND hWnd, UINT message, WPARAM wParam, LPARAM lParam)
 	switch (message)
 	{
 	case WM_DESTROY:
-		// Stop all audio graphs first
-		for (auto& [deviceId, audioGraph] : g_audioGraphs)
-		{
-			auto& [graph, inputNode, outputNode] = audioGraph;
-			graph.Stop();
-			graph.Close();
-		}
-		g_audioGraphs.clear();
-		
 		for (const auto& connection : g_audioPlaybackConnections)
 		{
 			connection.second.second.Close();
@@ -323,17 +311,6 @@ void SetupMenu()
 		SaveSettings();
 	});
 
-	// Audio Devices menu item
-	FontIcon audioIcon;
-	audioIcon.Glyph(L"\xE7F5");  // Speaker icon
-
-	MenuFlyoutItem audioDevicesItem;
-	audioDevicesItem.Text(_(L"List Audio Devices"));
-	audioDevicesItem.Icon(audioIcon);
-	audioDevicesItem.Click([](const auto&, const auto&) {
-		ListAudioDevices();
-	});
-
 	FontIcon closeIcon;
 	closeIcon.Glyph(L"\xE8BB");
 
@@ -368,7 +345,6 @@ void SetupMenu()
 	menu.Items().Append(settingsItem);
 	menu.Items().Append(startupItem);
 	menu.Items().Append(notificationItem);
-	menu.Items().Append(audioDevicesItem);
 	menu.Items().Append(exitItem);
 	menu.Opened([](const auto& sender, const auto&) {
 		auto menuItems = sender.as<MenuFlyout>().Items();
@@ -403,11 +379,7 @@ winrt::fire_and_forget ConnectDevice(DevicePicker picker, DeviceInformation devi
 			connection.StateChanged([](const auto& sender, const auto&) {
 				if (sender.State() == AudioPlaybackConnectionState::Closed)
 				{
-					std::wstring deviceId(sender.DeviceId());
-					// Stop audio routing for this device
-					StopAudioRouting(deviceId);
-					
-					auto it = g_audioPlaybackConnections.find(deviceId);
+					auto it = g_audioPlaybackConnections.find(std::wstring(sender.DeviceId()));
 					if (it != g_audioPlaybackConnections.end())
 					{
 						g_devicePicker.SetDisplayStatus(it->second.first, {}, DevicePickerDisplayStatusOptions::None);
@@ -470,8 +442,6 @@ winrt::fire_and_forget ConnectDevice(DevicePicker picker, DeviceInformation devi
 	if (success)
 	{
 		picker.SetDisplayStatus(device, _(L"Connected"), DevicePickerDisplayStatusOptions::ShowDisconnectButton);
-		// Set up audio routing to configured output device
-		SetupAudioRouting(std::wstring(device.Id()), std::wstring(device.Name()));
 		UpdateNotifyIcon();
 	}
 	else
@@ -507,12 +477,7 @@ void SetupDevicePicker()
 	});
 	g_devicePicker.DisconnectButtonClicked([](const auto& sender, const auto& args) {
 		auto device = args.Device();
-		std::wstring deviceId(device.Id());
-		
-		// Stop audio routing for this device
-		StopAudioRouting(deviceId);
-		
-		auto it = g_audioPlaybackConnections.find(deviceId);
+		auto it = g_audioPlaybackConnections.find(std::wstring(device.Id()));
 		if (it != g_audioPlaybackConnections.end())
 		{
 			it->second.second.Close();
@@ -673,177 +638,4 @@ void ShowInitialToastNotification()
 	{
 		// Silently ignore standard exceptions from toast notification - this is not critical functionality
 	}
-}
-
-// Find a device by name (partial match allowed)
-winrt::Windows::Foundation::IAsyncOperation<DeviceInformation> FindAudioRenderDevice(std::wstring_view deviceName)
-{
-	auto selector = winrt::Windows::Media::Devices::MediaDevice::GetAudioRenderSelector();
-	auto devices = co_await DeviceInformation::FindAllAsync(selector);
-	
-	for (const auto& device : devices)
-	{
-		// Check if the device name contains the search string
-		std::wstring name(device.Name());
-		if (name.find(deviceName) != std::wstring::npos)
-		{
-			co_return device;
-		}
-	}
-	co_return nullptr;
-}
-
-// Find the A2DP audio input device for a connected Bluetooth device
-winrt::Windows::Foundation::IAsyncOperation<DeviceInformation> FindA2dpInputDevice(std::wstring_view bluetoothDeviceName)
-{
-	auto selector = winrt::Windows::Media::Devices::MediaDevice::GetAudioCaptureSelector();
-	auto devices = co_await DeviceInformation::FindAllAsync(selector);
-	
-	for (const auto& device : devices)
-	{
-		std::wstring name(device.Name());
-		// A2DP devices typically have "A2DP SNK" in their name
-		if (name.find(L"A2DP") != std::wstring::npos || name.find(bluetoothDeviceName) != std::wstring::npos)
-		{
-			co_return device;
-		}
-	}
-	co_return nullptr;
-}
-
-// Set up audio routing from A2DP input device to the configured output device
-winrt::fire_and_forget SetupAudioRouting(std::wstring deviceId, std::wstring deviceName)
-{
-	// Only set up routing if a custom output device is configured
-	if (g_audioOutputDevice.empty())
-	{
-		co_return;
-	}
-
-	try
-	{
-		// Small delay to allow the A2DP virtual device to become available
-		co_await winrt::resume_after(std::chrono::milliseconds(1000));
-
-		// Find the A2DP input device
-		auto inputDevice = co_await FindA2dpInputDevice(deviceName);
-		if (!inputDevice)
-		{
-			LOG_HR_MSG(E_FAIL, "Could not find A2DP input device for: %ls", deviceName.c_str());
-			co_return;
-		}
-
-		// Find the configured output device
-		auto outputDevice = co_await FindAudioRenderDevice(g_audioOutputDevice);
-		if (!outputDevice)
-		{
-			LOG_HR_MSG(E_FAIL, "Could not find audio output device: %ls", g_audioOutputDevice.c_str());
-			co_return;
-		}
-
-		// Create audio graph settings with the output device
-		AudioGraphSettings settings(winrt::Windows::Media::Render::AudioRenderCategory::Media);
-		settings.PrimaryRenderDevice(outputDevice);
-
-		// Create the audio graph
-		auto graphResult = co_await AudioGraph::CreateAsync(settings);
-		if (graphResult.Status() != AudioGraphCreationStatus::Success)
-		{
-			LOG_HR_MSG(E_FAIL, "Failed to create AudioGraph: %d", static_cast<int>(graphResult.Status()));
-			co_return;
-		}
-
-		auto graph = graphResult.Graph();
-
-		// Create device input node from the A2DP device
-		auto inputResult = co_await graph.CreateDeviceInputNodeAsync(
-			winrt::Windows::Media::Capture::MediaCategory::Media,
-			graph.EncodingProperties(),
-			inputDevice);
-
-		if (inputResult.Status() != AudioDeviceNodeCreationStatus::Success)
-		{
-			LOG_HR_MSG(E_FAIL, "Failed to create input node: %d", static_cast<int>(inputResult.Status()));
-			graph.Close();
-			co_return;
-		}
-
-		auto inputNode = inputResult.DeviceInputNode();
-
-		// Create device output node
-		auto outputResult = co_await graph.CreateDeviceOutputNodeAsync();
-		if (outputResult.Status() != AudioDeviceNodeCreationStatus::Success)
-		{
-			LOG_HR_MSG(E_FAIL, "Failed to create output node: %d", static_cast<int>(outputResult.Status()));
-			graph.Close();
-			co_return;
-		}
-
-		auto outputNode = outputResult.DeviceOutputNode();
-
-		// Connect input to output
-		inputNode.AddOutgoingConnection(outputNode);
-
-		// Store the graph for cleanup later
-		g_audioGraphs.emplace(deviceId, std::make_tuple(graph, inputNode, outputNode));
-
-		// Start the audio graph
-		graph.Start();
-	}
-	catch (winrt::hresult_error const& ex)
-	{
-		LOG_HR_MSG(ex.code(), "Audio routing setup failed: %ls", ex.message().c_str());
-	}
-}
-
-// Stop audio routing for a device
-void StopAudioRouting(std::wstring deviceId)
-{
-	auto it = g_audioGraphs.find(deviceId);
-	if (it != g_audioGraphs.end())
-	{
-		auto& [graph, inputNode, outputNode] = it->second;
-		graph.Stop();
-		graph.Close();
-		g_audioGraphs.erase(it);
-	}
-}
-
-// List all available audio devices (for config file reference)
-winrt::fire_and_forget ListAudioDevices()
-{
-	try
-	{
-		std::wstring message = L"=== Audio Output Devices ===\n\n";
-
-		auto renderSelector = winrt::Windows::Media::Devices::MediaDevice::GetAudioRenderSelector();
-		auto renderDevices = co_await DeviceInformation::FindAllAsync(renderSelector);
-		
-		message += L"Output Devices (speakers/headphones):\n";
-		for (const auto& device : renderDevices)
-		{
-			message += L"  • ";
-			message += device.Name();
-			message += L"\n";
-		}
-
-		message += L"\n=== Audio Input Devices ===\n\n";
-
-		auto captureSelector = winrt::Windows::Media::Devices::MediaDevice::GetAudioCaptureSelector();
-		auto captureDevices = co_await DeviceInformation::FindAllAsync(captureSelector);
-		
-		message += L"Input Devices (microphones/A2DP sources):\n";
-		for (const auto& device : captureDevices)
-		{
-			message += L"  • ";
-			message += device.Name();
-			message += L"\n";
-		}
-
-		message += L"\nTo set output device, add to AudioPlaybackConnector.json:\n";
-		message += L"\"audioOutputDevice\": \"<device name or partial name>\"\n";
-
-		MessageBoxW(nullptr, message.c_str(), L"AudioPlaybackConnector - Available Audio Devices", MB_OK | MB_ICONINFORMATION);
-	}
-	CATCH_LOG();
 }
