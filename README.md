@@ -26,6 +26,13 @@ In addition to the features from the aforementioned forked projects, the followi
 Tested only on Windows 11 23H2 (as I am using Win11). Compatibility with other versions is not guaranteed.
 Issues encountered on other versions can be reported via GitHub Issues, but reproduction and fixes cannot be guaranteed.
 
+## Screenshots
+![Notification](https://cdn.jsdelivr.net/gh/gongfuture/AudioPlaybackConnector@master/assets/通知.png)
+![Tray Icon](https://cdn.jsdelivr.net/gh/gongfuture/AudioPlaybackConnector@master/assets/托盘图标.png)
+![Right-click Menu](https://cdn.jsdelivr.net/gh/gongfuture/AudioPlaybackConnector@master/assets/右键菜单.png)
+![Multiple Instances Warning](https://cdn.jsdelivr.net/gh/gongfuture/AudioPlaybackConnector@master/assets/重复实例警告.png)
+
+
 ## Troubleshooting
 When referencing [MoroccoBS](https://github.com/MoroccoBS)'s [fork](https://github.com/MoroccoBS/AudioPlaybackConnector), an issue was discovered where A2DP Sink devices could not be found on Windows 11. The solution is as follows:
 1. Open Registry Editor (Win + R, type `regedit`, press Enter)

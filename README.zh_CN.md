@@ -24,6 +24,12 @@
 只在Windows 11 23H2上测试过（因为我用的是WIn11），不保证其他版本的可用性。
 其他版本遇到的问题可以提issue，但是不保证能复现和修复。
 
+## 截图
+![通知](https://cdn.jsdelivr.net/gh/gongfuture/AudioPlaybackConnector@master/assets/通知.png)
+![托盘图标](https://cdn.jsdelivr.net/gh/gongfuture/AudioPlaybackConnector@master/assets/托盘图标.png)
+![右键菜单](https://cdn.jsdelivr.net/gh/gongfuture/AudioPlaybackConnector@master/assets/右键菜单.png)
+![重复实例警告](https://cdn.jsdelivr.net/gh/gongfuture/AudioPlaybackConnector@master/assets/重复实例警告.png)
+
 ## 疑难杂症解决
 参考[MoroccoBS](https://github.com/MoroccoBS)的[复刻](https://github.com/MoroccoBS/AudioPlaybackConnector)时，发现 Windows11 找不到 A2DP Sink 设备的问题，解决方法如下：
 1. 打开注册表编辑器（Win + R，输入 regedit，回车）
