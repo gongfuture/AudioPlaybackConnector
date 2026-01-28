@@ -1,0 +1,6 @@
+#include "../../targetver.h"
+#include "windows.h"
+LANGUAGE LANG_CHINESE, SUBLANG_CHINESE_SIMPLIFIED
+1 YMO "zh_CN.ymo"
+LANGUAGE LANG_CHINESE, SUBLANG_CHINESE_TRADITIONAL
+1 YMO "zh_TW.ymo"
