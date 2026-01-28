@@ -7,7 +7,7 @@ msgid ""
 msgstr ""
 "Project-Id-Version: AudioPlaybackConnector\n"
 "Report-Msgid-Bugs-To: \n"
-"POT-Creation-Date: 2020-07-06 19:07+0800\n"
+"POT-Creation-Date: 2026-01-28 05:15+0000\n"
 "PO-Revision-Date: 2020-07-06 19:09+0800\n"
 "Last-Translator: Richard Yu <yurichard3839@gmail.com>\n"
 "Language-Team: \n"
@@ -18,19 +18,32 @@ msgstr ""
 "X-Generator: Poedit 2.3.1\n"
 "Plural-Forms: nplurals=1; plural=0;\n"
 
-#: AudioPlaybackConnector.cpp:39
+#: AudioPlaybackConnector.cpp:34
+msgid "Already running!"
+msgstr "已在运行！"
+
+#: AudioPlaybackConnector.cpp:34
+msgid ""
+"AudioPlaybackConnector is already running in background.\r\n"
+"Check system tray."
+msgstr ""
+"AudioPlaybackConnector 已在后台运行。\r\n"
+"请检查系统托盘。"
+
+#: AudioPlaybackConnector.cpp:57
 msgid "Unsupported Operating System"
 msgstr "不支持的操作系统"
 
-#: AudioPlaybackConnector.cpp:39
-msgid "AudioPlaybackConnector is not supported on this operating system version."
+#: AudioPlaybackConnector.cpp:57
+msgid ""
+"AudioPlaybackConnector is not supported on this operating system version."
 msgstr "此操作系统版本不支持 AudioPlaybackConnector。"
 
-#: AudioPlaybackConnector.cpp:75
+#: AudioPlaybackConnector.cpp:93 AudioPlaybackConnector.cpp:584
 msgid "AudioPlaybackConnector"
 msgstr ""
 
-#: AudioPlaybackConnector.cpp:196
+#: AudioPlaybackConnector.cpp:228
 msgid ""
 "All connections will be closed.\n"
 "Exit anyway?"
@@ -38,34 +51,46 @@ msgstr ""
 "所有连接都将关闭。\n"
 "仍然要退出吗？"
 
-#: AudioPlaybackConnector.cpp:201
+#: AudioPlaybackConnector.cpp:233
 msgid "Reconnect on next start"
 msgstr "下次启动时重新连接"
 
-#: AudioPlaybackConnector.cpp:204 AudioPlaybackConnector.cpp:240
+#: AudioPlaybackConnector.cpp:236 AudioPlaybackConnector.cpp:318
 msgid "Exit"
 msgstr "退出"
 
-#: AudioPlaybackConnector.cpp:230
+#: AudioPlaybackConnector.cpp:262
 msgid "Bluetooth Settings"
 msgstr "蓝牙设置"
 
-#: AudioPlaybackConnector.cpp:287
+#: AudioPlaybackConnector.cpp:272
+msgid "Run at login"
+msgstr "开机自启动"
+
+#: AudioPlaybackConnector.cpp:295
+msgid "Show startup notification"
+msgstr "显示启动通知"
+
+#: AudioPlaybackConnector.cpp:367
 msgid "Connecting"
 msgstr "正在连接"
 
-#: AudioPlaybackConnector.cpp:322
+#: AudioPlaybackConnector.cpp:404
 msgid "The request timed out"
 msgstr "请求超时"
 
-#: AudioPlaybackConnector.cpp:326
+#: AudioPlaybackConnector.cpp:408
 msgid "The operation was denied by the system"
 msgstr "操作被系统拒绝"
 
-#: AudioPlaybackConnector.cpp:337
+#: AudioPlaybackConnector.cpp:419
 msgid "Unknown error"
 msgstr "未知错误"
 
-#: AudioPlaybackConnector.cpp:362
+#: AudioPlaybackConnector.cpp:444
 msgid "Connected"
 msgstr "已连接"
+
+#: AudioPlaybackConnector.cpp:585
+msgid "Application has started and is running in the notification area."
+msgstr "应用程序已启动，正在通知区域运行。"
