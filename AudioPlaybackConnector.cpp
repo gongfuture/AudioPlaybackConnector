@@ -18,21 +18,43 @@ void SetDisplayStatusSafe(const DeviceInformation& device, std::wstring_view sta
 std::wstring FormatConnectError(const ConnectResult& result);
 size_t CountConnected();
 
-// 把堆積上的資料交給 UI 執行緒處理。PostMessageW 是執行緒安全的，
-// payload 以傳值方式接手所有權，兩條路徑的處置剛好相反：
-//   失敗 -> 這則訊息不會有人收，直接讓 payload 解構把記憶體刪掉；
+// 把堆積上的資料交給 UI 執行緒處理。PostMessageW 是執行緒安全的。
+// payload 以傳值方式接手所有權：
 //   成功 -> 所有權移交給訊息佇列（WndProc 會用 unique_ptr 重新接管），
-//           所以要 release() 放棄所有權，避免這裡把它刪掉造成 use-after-free。
+//           所以要 release() 放棄所有權，避免這裡把它刪掉造成 use-after-free；
+//   失敗 -> 這則訊息不會有人收，payload 解構時記憶體就被釋放了。
+// 只有在「記憶體以外還有東西要收尾」時，才需要下面那個帶 onUndelivered 的多載。
 template <typename T>
-bool PostPayload(UINT message, std::unique_ptr<T> payload)
+void PostPayload(UINT message, std::unique_ptr<T> payload)
 {
 	if (!PostMessageW(g_hWnd, message, reinterpret_cast<WPARAM>(payload.get()), 0))
 	{
 		LOG_LAST_ERROR();
-		return false;
+		return;
 	}
 	payload.release();
-	return true;
+}
+
+// 送不出去時（視窗已銷毀、或訊息佇列爆掉）先讓呼叫端善後，再釋放 payload。
+// onUndelivered 在呼叫 PostPayload 的執行緒上執行；例外由這裡擋住，
+// 因為呼叫端多半是 fire_and_forget 協程，例外逸出會直接 terminate。
+template <typename T, typename F>
+void PostPayload(UINT message, std::unique_ptr<T> payload, F&& onUndelivered)
+{
+	if (!PostMessageW(g_hWnd, message, reinterpret_cast<WPARAM>(payload.get()), 0))
+	{
+		LOG_LAST_ERROR();
+		try
+		{
+			onUndelivered(*payload);
+		}
+		catch (...)
+		{
+			LOG_CAUGHT_EXCEPTION();
+		}
+		return;
+	}
+	payload.release();
 }
 
 // DevicePicker 關閉之後再呼叫 SetDisplayStatus 會拋例外，統一在這裡吞掉。
@@ -670,7 +692,15 @@ winrt::fire_and_forget OpenConnectionAsync(std::wstring deviceId, uint64_t token
 		LOG_CAUGHT_EXCEPTION();
 	}
 
-	PostPayload(WM_CONNECTRESULT, std::move(result));
+	// 送不出去就沒有人會接手這條連線了（視窗已銷毀，或訊息佇列爆掉）。
+	// 必須明確 Close()：讓 ConnectResult 解構只會 Release() 掉 COM 參考，
+	// 那跟 IClosable::Close() 不是同一個呼叫，不該依賴它來收掉底層傳輸。
+	PostPayload(WM_CONNECTRESULT, std::move(result), [](ConnectResult& rejected) {
+		if (rejected.connection && rejected.connection.State() != AudioPlaybackConnectionState::Closed)
+		{
+			rejected.connection.Close();
+		}
+		});
 }
 
 // 開機重連只用得到 deviceId，解析成 DeviceInformation 之後丟回 UI 執行緒走一般流程。
