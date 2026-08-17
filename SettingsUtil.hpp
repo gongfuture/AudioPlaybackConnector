@@ -34,7 +34,7 @@ void LoadSettings()
 		std::wstring utf16 = Utf8ToUtf16(string);
 		auto jsonObj = JsonObject::Parse(utf16);
 		g_reconnect = jsonObj.Lookup(L"reconnect").GetBoolean();
-		
+
 		if (jsonObj.HasKey(L"showNotification"))
 			g_showNotification = jsonObj.Lookup(L"showNotification").GetBoolean();
 
@@ -60,7 +60,11 @@ void SaveSettings()
 		JsonArray lastDevices;
 		for (const auto& i : g_audioPlaybackConnections)
 		{
-			lastDevices.Append(JsonValue::CreateStringValue(i.first));
+			// 只記住真的連上的裝置，正在連線中的不算。
+			if (i.second.connected)
+			{
+				lastDevices.Append(JsonValue::CreateStringValue(i.first));
+			}
 		}
 		jsonObj.Insert(L"lastDevices", lastDevices);
 

@@ -34,7 +34,10 @@
 // C++ RunTime Header Files
 #include <cstdlib>
 #include <cstdint>
+#include <memory>
+#include <string>
 #include <unordered_map>
+#include <vector>
 #include <filesystem>
 
 // wil
