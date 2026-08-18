@@ -196,7 +196,7 @@ void CALLBACK OnWorkerStopTimeout(PVOID parameter, BOOLEAN timerOrWaitFired)
 		return; // worker 自己結束了，不需要動手
 	}
 	auto context = static_cast<WorkerContext*>(parameter);
-	TerminateProcess(context->process, static_cast<UINT>(APC_S_CLOSED));
+	TerminateProcess(context->process.get(), static_cast<UINT>(APC_S_CLOSED));
 }
 
 bool LaunchWorker(const std::wstring& deviceId, uint64_t token)
@@ -209,13 +209,11 @@ bool LaunchWorker(const std::wstring& deviceId, uint64_t token)
 	const auto stopName = L"Local\\AudioPlaybackConnector_Stop_" + suffix;
 	const auto connectedName = L"Local\\AudioPlaybackConnector_Connected_" + suffix;
 
-	context->stopEvent = CreateEventW(nullptr, TRUE, FALSE, stopName.c_str());
-	context->connectedEvent = CreateEventW(nullptr, TRUE, FALSE, connectedName.c_str());
+	context->stopEvent.reset(CreateEventW(nullptr, TRUE, FALSE, stopName.c_str()));
+	context->connectedEvent.reset(CreateEventW(nullptr, TRUE, FALSE, connectedName.c_str()));
 	if (!context->stopEvent || !context->connectedEvent)
 	{
 		LOG_LAST_ERROR();
-		if (context->stopEvent) CloseHandle(context->stopEvent);
-		if (context->connectedEvent) CloseHandle(context->connectedEvent);
 		return false;
 	}
 
@@ -228,22 +226,20 @@ bool LaunchWorker(const std::wstring& deviceId, uint64_t token)
 	if (!CreateProcessW(nullptr, commandLine.data(), nullptr, nullptr, FALSE, CREATE_NO_WINDOW, nullptr, nullptr, &startupInfo, &processInfo))
 	{
 		LOG_LAST_ERROR();
-		CloseHandle(context->stopEvent);
-		CloseHandle(context->connectedEvent);
 		return false;
 	}
 	CloseHandle(processInfo.hThread);
-	context->process = processInfo.hProcess;
+	context->process.reset(processInfo.hProcess);
 
 	if (g_hJob)
 	{
-		LOG_IF_WIN32_BOOL_FALSE(AssignProcessToJobObject(g_hJob, context->process));
+		LOG_IF_WIN32_BOOL_FALSE(AssignProcessToJobObject(g_hJob, context->process.get()));
 	}
 
 	// 兩個非同步等待取代原本的阻塞輪詢：連線成功一個、行程結束一個。
 	auto raw = context.get();
-	if (!RegisterWaitForSingleObject(&context->connectedWait, context->connectedEvent, OnWorkerConnected, raw, INFINITE, WT_EXECUTEONLYONCE) ||
-		!RegisterWaitForSingleObject(&context->processWait, context->process, OnWorkerExited, raw, INFINITE, WT_EXECUTEONLYONCE))
+	if (!RegisterWaitForSingleObject(context->connectedWait.put(), context->connectedEvent.get(), OnWorkerConnected, raw, INFINITE, WT_EXECUTEONLYONCE) ||
+		!RegisterWaitForSingleObject(context->processWait.put(), context->process.get(), OnWorkerExited, raw, INFINITE, WT_EXECUTEONLYONCE))
 	{
 		LOG_LAST_ERROR();
 		g_workers.emplace(token, std::move(context));
@@ -263,26 +259,16 @@ void DestroyWorker(uint64_t token)
 	{
 		return;
 	}
+	// 還沒結束的 worker 直接終止。它一結束 processWait 會再送一則 WM_WORKEREXITED，
+	// 但那時 g_workers 裡已經沒有這個 token，那則訊息會被忽略。
 	auto& worker = *it->second;
-
-	// UnregisterWaitEx(INVALID_HANDLE_VALUE) 會等到進行中的回呼跑完才返回。
-	// 回呼只做 PostMessage、不會回頭等 UI 執行緒，所以這裡不會死鎖，
-	// 而且能保證接下來關閉 handle 時不會有回呼還在用 context。
-	if (worker.connectedWait) UnregisterWaitEx(worker.connectedWait, INVALID_HANDLE_VALUE);
-	if (worker.processWait) UnregisterWaitEx(worker.processWait, INVALID_HANDLE_VALUE);
-	if (worker.stopTimeoutWait) UnregisterWaitEx(worker.stopTimeoutWait, INVALID_HANDLE_VALUE);
-
-	if (worker.process)
+	if (worker.process && WaitForSingleObject(worker.process.get(), 0) != WAIT_OBJECT_0)
 	{
-		if (WaitForSingleObject(worker.process, 0) != WAIT_OBJECT_0)
-		{
-			TerminateProcess(worker.process, static_cast<UINT>(APC_S_CLOSED));
-		}
-		CloseHandle(worker.process);
+		TerminateProcess(worker.process.get(), static_cast<UINT>(APC_S_CLOSED));
 	}
-	if (worker.stopEvent) CloseHandle(worker.stopEvent);
-	if (worker.connectedEvent) CloseHandle(worker.connectedEvent);
 
+	// 其餘清理交給 WorkerContext 的解構子：等待註冊會先被解除（並等回呼跑完），
+	// 才輪到 handle 被關閉，順序由成員宣告順序保證。
 	g_workers.erase(it);
 }
 
@@ -310,22 +296,12 @@ std::wstring FormatWorkerError(DWORD exitCode)
 		return _(L"Unknown error");
 	}
 
-	auto message = winrt::hresult_error(hr).message();
-	std::wstring formatted(64, L'\0');
-	while (true)
-	{
-		auto written = swprintf(formatted.data(), formatted.size(), L"%s (0x%08X)", message.c_str(), static_cast<uint32_t>(hr));
-		if (written < 0)
-		{
-			formatted.resize(formatted.size() * 2);
-		}
-		else
-		{
-			formatted.resize(written);
-			break;
-		}
-	}
-	return formatted;
+	// 只有錯誤碼需要格式化，長度固定（" (0xXXXXXXXX)" 共 13 個字元），訊息本身
+	// 直接串接就好，不必猜緩衝區大小。swprintf 對「緩衝區不足」和「編碼錯誤」
+	// 都回傳負值、分不出來，用它的回傳值去擴張緩衝區會在真的格式錯誤時無限成長。
+	wchar_t code[16] = {};
+	swprintf_s(code, L" (0x%08X)", static_cast<uint32_t>(hr));
+	return std::wstring(winrt::hresult_error(hr).message()) + code;
 }
 
 bool IsSystemLightTheme()
@@ -562,13 +538,17 @@ LRESULT CALLBACK WndProc(HWND hWnd, UINT message, WPARAM wParam, LPARAM lParam)
 			SaveSettings();
 		}
 
-		// 先請所有 worker 正常結束，再清掉自己這側的狀態。全程不阻塞：
-		// 沒能及時退出的 worker 會在下面關閉 job 時被一併終止。
+		// 先送出停止要求，讓剛好來得及的 worker 自己收尾。這裡不等它們：
+		// 下面的 DestroyWorker 會把還在執行的直接 TerminateProcess，
+		// 所以實務上多數 worker 是被硬砍的。可以接受——行程結束時核心會關閉
+		// 它所有的 handle，音訊服務一樣會察覺客戶端消失並拆掉 A2DP 連線，
+		// 這也正是原本 worker 設計依賴的機制。
+		// （關閉 job 是另一層保險，針對的是父行程異常死亡、跑不到這裡的情況。）
 		for (auto& worker : g_workers)
 		{
 			if (worker.second->stopEvent)
 			{
-				SetEvent(worker.second->stopEvent);
+				SetEvent(worker.second->stopEvent.get());
 			}
 		}
 
@@ -690,13 +670,13 @@ LRESULT CALLBACK WndProc(HWND hWnd, UINT message, WPARAM wParam, LPARAM lParam)
 			{
 				if (worker->second->stopEvent)
 				{
-					SetEvent(worker->second->stopEvent);
+					SetEvent(worker->second->stopEvent.get());
 				}
 				// worker 若卡住不退出就在逾時後強制終止，否則它會一直佔著該裝置。
 				if (!worker->second->stopTimeoutWait && worker->second->process)
 				{
-					LOG_IF_WIN32_BOOL_FALSE(RegisterWaitForSingleObject(&worker->second->stopTimeoutWait,
-						worker->second->process, OnWorkerStopTimeout, worker->second.get(),
+					LOG_IF_WIN32_BOOL_FALSE(RegisterWaitForSingleObject(worker->second->stopTimeoutWait.put(),
+						worker->second->process.get(), OnWorkerStopTimeout, worker->second.get(),
 						3000, WT_EXECUTEONLYONCE));
 				}
 			}
@@ -744,7 +724,7 @@ LRESULT CALLBACK WndProc(HWND hWnd, UINT message, WPARAM wParam, LPARAM lParam)
 		DWORD exitCode = static_cast<DWORD>(E_FAIL);
 		if (worker->second->process)
 		{
-			LOG_IF_WIN32_BOOL_FALSE(GetExitCodeProcess(worker->second->process, &exitCode));
+			LOG_IF_WIN32_BOOL_FALSE(GetExitCodeProcess(worker->second->process.get(), &exitCode));
 		}
 		DestroyWorker(payload->token);
 

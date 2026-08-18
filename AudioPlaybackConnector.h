@@ -66,18 +66,33 @@ constexpr HRESULT APC_E_CREATE_FAILED = static_cast<HRESULT>(0xA0000001);     //
 constexpr HRESULT APC_E_REQUEST_TIMED_OUT = static_cast<HRESULT>(0xA0000002);
 constexpr HRESULT APC_E_DENIED_BY_SYSTEM = static_cast<HRESULT>(0xA0000003);
 
+// RegisterWaitForSingleObject 取得的 handle 不是用 CloseHandle 釋放的，wil 也只包了
+// 新版 threadpool 的 PTP_WAIT，所以這裡自己補一個。UnregisterWaitEx 一定要傳
+// INVALID_HANDLE_VALUE：那會等到進行中的回呼跑完才返回，這是「釋放 WorkerContext
+// 之前不會有回呼還握著它」的唯一保證。只能在 UI 執行緒上解構（在回呼自己裡面呼叫
+// 這個會死鎖）。
+inline void UnregisterWaitBlocking(HANDLE waitHandle) noexcept
+{
+	UnregisterWaitEx(waitHandle, INVALID_HANDLE_VALUE);
+}
+using unique_registered_wait = wil::unique_any<HANDLE, decltype(&UnregisterWaitBlocking), UnregisterWaitBlocking>;
+
 // 一個 worker 行程的所有 handle。只能在 UI 執行緒上建立與銷毀；
 // 執行緒池回呼只讀 token 然後 PostMessage。
 struct WorkerContext
 {
 	std::wstring deviceId;
 	uint64_t token = 0;
-	HANDLE process = nullptr;
-	HANDLE stopEvent = nullptr;      // 父 -> 子：請正常結束
-	HANDLE connectedEvent = nullptr; // 子 -> 父：連線已開啟
-	HANDLE connectedWait = nullptr;
-	HANDLE processWait = nullptr;
-	HANDLE stopTimeoutWait = nullptr;
+
+	// 宣告順序是清理順序的一部分，不要重排：成員以宣告的相反順序解構，
+	// 因此下面三個等待註冊一定先被解除（並等回呼結束），才輪到上面的 handle
+	// 被關閉。反過來的話，回呼可能正拿著已經關掉的 handle。
+	wil::unique_handle process;
+	wil::unique_handle stopEvent;      // 父 -> 子：請正常結束
+	wil::unique_handle connectedEvent; // 子 -> 父：連線已開啟
+	unique_registered_wait connectedWait;
+	unique_registered_wait processWait;
+	unique_registered_wait stopTimeoutWait;
 };
 
 // C++/WinRT 的投影型別刻意刪除了 operator new，無法直接放到堆積上，
