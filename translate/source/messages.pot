@@ -52,6 +52,10 @@ msgstr ""
 msgid "Connecting"
 msgstr ""
 
+#: AudioPlaybackConnector.cpp:676 AudioPlaybackConnector.cpp:921
+msgid "Disconnecting"
+msgstr ""
+
 #: AudioPlaybackConnector.cpp:322
 msgid "The request timed out"
 msgstr ""

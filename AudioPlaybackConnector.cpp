@@ -7,7 +7,6 @@ void SetupFlyout();
 void SetupMenu();
 void ConnectDevice(const DeviceInformation& device);
 winrt::fire_and_forget ConnectDeviceById(std::wstring deviceId);
-winrt::fire_and_forget OpenConnectionAsync(std::wstring deviceId, uint64_t token);
 void SetupDevicePicker();
 void SetupSvgIcon();
 void UpdateNotifyIcon();
@@ -15,43 +14,24 @@ bool GetStartupStatus();
 void SetStartupStatus(bool status);
 void ShowInitialToastNotification();
 void SetDisplayStatusSafe(const DeviceInformation& device, std::wstring_view status, DevicePickerDisplayStatusOptions options);
-std::wstring FormatConnectError(const ConnectResult& result);
+std::wstring FormatWorkerError(DWORD exitCode);
 size_t CountConnected();
+bool TryGetArgValue(PCWSTR name, std::wstring& value);
+int RunWorkerProcess(std::wstring_view deviceId, std::wstring_view stopEventName, std::wstring_view connectedEventName);
+bool LaunchWorker(const std::wstring& deviceId, uint64_t token);
+void DestroyWorker(uint64_t token);
 
 // 把堆積上的資料交給 UI 執行緒處理。PostMessageW 是執行緒安全的。
 // payload 以傳值方式接手所有權：
 //   成功 -> 所有權移交給訊息佇列（WndProc 會用 unique_ptr 重新接管），
 //           所以要 release() 放棄所有權，避免這裡把它刪掉造成 use-after-free；
 //   失敗 -> 這則訊息不會有人收，payload 解構時記憶體就被釋放了。
-// 只有在「記憶體以外還有東西要收尾」時，才需要下面那個帶 onUndelivered 的多載。
 template <typename T>
 void PostPayload(UINT message, std::unique_ptr<T> payload)
 {
 	if (!PostMessageW(g_hWnd, message, reinterpret_cast<WPARAM>(payload.get()), 0))
 	{
 		LOG_LAST_ERROR();
-		return;
-	}
-	payload.release();
-}
-
-// 送不出去時（視窗已銷毀、或訊息佇列爆掉）先讓呼叫端善後，再釋放 payload。
-// onUndelivered 在呼叫 PostPayload 的執行緒上執行；例外由這裡擋住，
-// 因為呼叫端多半是 fire_and_forget 協程，例外逸出會直接 terminate。
-template <typename T, typename F>
-void PostPayload(UINT message, std::unique_ptr<T> payload, F&& onUndelivered)
-{
-	if (!PostMessageW(g_hWnd, message, reinterpret_cast<WPARAM>(payload.get()), 0))
-	{
-		LOG_LAST_ERROR();
-		try
-		{
-			onUndelivered(*payload);
-		}
-		catch (...)
-		{
-			LOG_CAUGHT_EXCEPTION();
-		}
 		return;
 	}
 	payload.release();
@@ -80,12 +60,272 @@ size_t CountConnected()
 	size_t count = 0;
 	for (const auto& item : g_audioPlaybackConnections)
 	{
-		if (item.second.connected)
+		if (item.second.state == ConnectionState::Connected)
 		{
 			++count;
 		}
 	}
 	return count;
+}
+
+bool TryGetArgValue(PCWSTR name, std::wstring& value)
+{
+	int argc = 0;
+	auto argv = CommandLineToArgvW(GetCommandLineW(), &argc);
+	if (!argv)
+	{
+		return false;
+	}
+
+	bool found = false;
+	for (int i = 1; i < argc; ++i)
+	{
+		if (_wcsicmp(argv[i], name) == 0 && i + 1 < argc)
+		{
+			value = argv[i + 1];
+			found = true;
+			break;
+		}
+	}
+
+	LocalFree(argv);
+	return found;
+}
+
+// ---------------------------------------------------------------------------
+// worker 行程本體：整個行程只服務一條連線，結束碼就是結果。
+// ---------------------------------------------------------------------------
+int RunWorkerProcess(std::wstring_view deviceId, std::wstring_view stopEventName, std::wstring_view connectedEventName)
+{
+	HRESULT result = E_FAIL;
+
+	try
+	{
+		winrt::init_apartment();
+
+		wil::unique_handle stopEvent(OpenEventW(SYNCHRONIZE, FALSE, std::wstring(stopEventName).c_str()));
+		wil::unique_handle connectedEvent(OpenEventW(EVENT_MODIFY_STATE, FALSE, std::wstring(connectedEventName).c_str()));
+		if (!stopEvent || !connectedEvent)
+		{
+			return LOG_HR(HRESULT_FROM_WIN32(GetLastError()));
+		}
+
+		auto connection = AudioPlaybackConnection::TryCreateFromId(deviceId);
+		if (!connection)
+		{
+			return LOG_HR(APC_E_CREATE_FAILED);
+		}
+
+		wil::unique_handle closedEvent(CreateEventW(nullptr, TRUE, FALSE, nullptr));
+		if (!closedEvent)
+		{
+			return LOG_HR(HRESULT_FROM_WIN32(GetLastError()));
+		}
+
+		const HANDLE closedHandle = closedEvent.get();
+		connection.StateChanged([closedHandle](const auto& sender, const auto&) {
+			if (sender.State() == AudioPlaybackConnectionState::Closed)
+			{
+				SetEvent(closedHandle);
+			}
+			});
+
+		connection.StartAsync().get();
+		const auto openResult = connection.OpenAsync().get();
+		switch (openResult.Status())
+		{
+		case AudioPlaybackConnectionOpenResultStatus::Success:
+			break;
+		case AudioPlaybackConnectionOpenResultStatus::RequestTimedOut:
+			return LOG_HR(APC_E_REQUEST_TIMED_OUT);
+		case AudioPlaybackConnectionOpenResultStatus::DeniedBySystem:
+			return LOG_HR(APC_E_DENIED_BY_SYSTEM);
+		default:
+		{
+			// 把真正的失敗原因帶回去（例如裝置已被占用），別讓它變成一句 Unknown error。
+			const auto extended = static_cast<HRESULT>(openResult.ExtendedError());
+			return LOG_HR(extended != S_OK ? extended : E_FAIL);
+		}
+		}
+
+		// 通知父行程連線已開啟。在這之前結束都會被父行程視為連線失敗。
+		SetEvent(connectedEvent.get());
+
+		HANDLE handles[2] = { closedHandle, stopEvent.get() };
+		WaitForMultipleObjects(2, handles, FALSE, INFINITE);
+
+		connection.Close();
+		result = APC_S_CLOSED;
+	}
+	catch (...)
+	{
+		result = LOG_CAUGHT_EXCEPTION();
+	}
+
+	return result;
+}
+
+// ---------------------------------------------------------------------------
+// 父行程這側的 worker 生命週期管理
+// ---------------------------------------------------------------------------
+
+// 以下三個回呼都在執行緒池執行緒上執行，只能 PostMessage，不可以碰任何共用狀態。
+// context 的存活由 DestroyWorker 保證：它會先 UnregisterWaitEx 等待回呼結束才釋放。
+void CALLBACK OnWorkerConnected(PVOID parameter, BOOLEAN)
+{
+	auto context = static_cast<WorkerContext*>(parameter);
+	auto payload = std::make_unique<WorkerEventPayload>();
+	payload->token = context->token;
+	PostPayload(WM_WORKERCONNECTED, std::move(payload));
+}
+
+void CALLBACK OnWorkerExited(PVOID parameter, BOOLEAN)
+{
+	auto context = static_cast<WorkerContext*>(parameter);
+	auto payload = std::make_unique<WorkerEventPayload>();
+	payload->token = context->token;
+	PostPayload(WM_WORKEREXITED, std::move(payload));
+}
+
+// 只有在使用者要求斷線後才註冊：worker 若賴著不走就強制終止，
+// 否則它會一直佔著那個裝置的 A2DP 連線，該裝置就再也連不上了。
+void CALLBACK OnWorkerStopTimeout(PVOID parameter, BOOLEAN timerOrWaitFired)
+{
+	if (!timerOrWaitFired)
+	{
+		return; // worker 自己結束了，不需要動手
+	}
+	auto context = static_cast<WorkerContext*>(parameter);
+	TerminateProcess(context->process, static_cast<UINT>(APC_S_CLOSED));
+}
+
+bool LaunchWorker(const std::wstring& deviceId, uint64_t token)
+{
+	auto context = std::make_unique<WorkerContext>();
+	context->deviceId = deviceId;
+	context->token = token;
+
+	const auto suffix = std::to_wstring(GetCurrentProcessId()) + L"_" + std::to_wstring(token);
+	const auto stopName = L"Local\\AudioPlaybackConnector_Stop_" + suffix;
+	const auto connectedName = L"Local\\AudioPlaybackConnector_Connected_" + suffix;
+
+	context->stopEvent = CreateEventW(nullptr, TRUE, FALSE, stopName.c_str());
+	context->connectedEvent = CreateEventW(nullptr, TRUE, FALSE, connectedName.c_str());
+	if (!context->stopEvent || !context->connectedEvent)
+	{
+		LOG_LAST_ERROR();
+		if (context->stopEvent) CloseHandle(context->stopEvent);
+		if (context->connectedEvent) CloseHandle(context->connectedEvent);
+		return false;
+	}
+
+	// 用同一份 exe，不再複製檔案：需要的只是行程隔離。
+	auto commandLine = L"\"" + GetModuleFsPath(g_hInst).wstring() + L"\" --worker \"" + deviceId +
+		L"\" --stopEvent \"" + stopName + L"\" --connectedEvent \"" + connectedName + L"\"";
+
+	STARTUPINFOW startupInfo = { sizeof(startupInfo) };
+	PROCESS_INFORMATION processInfo = {};
+	if (!CreateProcessW(nullptr, commandLine.data(), nullptr, nullptr, FALSE, CREATE_NO_WINDOW, nullptr, nullptr, &startupInfo, &processInfo))
+	{
+		LOG_LAST_ERROR();
+		CloseHandle(context->stopEvent);
+		CloseHandle(context->connectedEvent);
+		return false;
+	}
+	CloseHandle(processInfo.hThread);
+	context->process = processInfo.hProcess;
+
+	if (g_hJob)
+	{
+		LOG_IF_WIN32_BOOL_FALSE(AssignProcessToJobObject(g_hJob, context->process));
+	}
+
+	// 兩個非同步等待取代原本的阻塞輪詢：連線成功一個、行程結束一個。
+	auto raw = context.get();
+	if (!RegisterWaitForSingleObject(&context->connectedWait, context->connectedEvent, OnWorkerConnected, raw, INFINITE, WT_EXECUTEONLYONCE) ||
+		!RegisterWaitForSingleObject(&context->processWait, context->process, OnWorkerExited, raw, INFINITE, WT_EXECUTEONLYONCE))
+	{
+		LOG_LAST_ERROR();
+		g_workers.emplace(token, std::move(context));
+		DestroyWorker(token); // 走一般清理路徑，順便終止已啟動的 worker
+		return false;
+	}
+
+	g_workers.emplace(token, std::move(context));
+	return true;
+}
+
+// 只在 UI 執行緒呼叫。
+void DestroyWorker(uint64_t token)
+{
+	auto it = g_workers.find(token);
+	if (it == g_workers.end())
+	{
+		return;
+	}
+	auto& worker = *it->second;
+
+	// UnregisterWaitEx(INVALID_HANDLE_VALUE) 會等到進行中的回呼跑完才返回。
+	// 回呼只做 PostMessage、不會回頭等 UI 執行緒，所以這裡不會死鎖，
+	// 而且能保證接下來關閉 handle 時不會有回呼還在用 context。
+	if (worker.connectedWait) UnregisterWaitEx(worker.connectedWait, INVALID_HANDLE_VALUE);
+	if (worker.processWait) UnregisterWaitEx(worker.processWait, INVALID_HANDLE_VALUE);
+	if (worker.stopTimeoutWait) UnregisterWaitEx(worker.stopTimeoutWait, INVALID_HANDLE_VALUE);
+
+	if (worker.process)
+	{
+		if (WaitForSingleObject(worker.process, 0) != WAIT_OBJECT_0)
+		{
+			TerminateProcess(worker.process, static_cast<UINT>(APC_S_CLOSED));
+		}
+		CloseHandle(worker.process);
+	}
+	if (worker.stopEvent) CloseHandle(worker.stopEvent);
+	if (worker.connectedEvent) CloseHandle(worker.connectedEvent);
+
+	g_workers.erase(it);
+}
+
+// worker 的結束碼就是一個 HRESULT。已知原因給友善訊息，其餘一律把系統的
+// 錯誤描述和原始碼值一起顯示出來，使用者才看得出是「裝置已被占用」還是別的問題。
+// 只在 UI 執行緒呼叫。
+std::wstring FormatWorkerError(DWORD exitCode)
+{
+	const auto hr = static_cast<HRESULT>(exitCode);
+	switch (hr)
+	{
+	case APC_E_REQUEST_TIMED_OUT:
+		return _(L"The request timed out");
+	case APC_E_DENIED_BY_SYSTEM:
+		return _(L"The operation was denied by the system");
+	case APC_E_CREATE_FAILED:
+		return _(L"Unknown error");
+	default:
+		break;
+	}
+
+	// STILL_ACTIVE 代表 GetExitCodeProcess 抓到的不是真正的結束碼，別拿它去解讀。
+	if (SUCCEEDED(hr) || hr == static_cast<HRESULT>(STILL_ACTIVE))
+	{
+		return _(L"Unknown error");
+	}
+
+	auto message = winrt::hresult_error(hr).message();
+	std::wstring formatted(64, L'\0');
+	while (true)
+	{
+		auto written = swprintf(formatted.data(), formatted.size(), L"%s (0x%08X)", message.c_str(), static_cast<uint32_t>(hr));
+		if (written < 0)
+		{
+			formatted.resize(formatted.size() * 2);
+		}
+		else
+		{
+			formatted.resize(written);
+			break;
+		}
+	}
+	return formatted;
 }
 
 bool IsSystemLightTheme()
@@ -189,6 +429,18 @@ int APIENTRY wWinMain(_In_ HINSTANCE hInstance,
 	UNREFERENCED_PARAMETER(lpCmdLine);
 	UNREFERENCED_PARAMETER(nCmdShow);
 
+	// worker 模式：同一份 exe，只是換一組參數。必須擋在單一實例檢查之前。
+	std::wstring workerDeviceId;
+	if (TryGetArgValue(L"--worker", workerDeviceId))
+	{
+		std::wstring stopEventName, connectedEventName;
+		if (!TryGetArgValue(L"--stopEvent", stopEventName) || !TryGetArgValue(L"--connectedEvent", connectedEventName))
+		{
+			return E_INVALIDARG;
+		}
+		return RunWorkerProcess(workerDeviceId, stopEventName, connectedEventName);
+	}
+
 	// Prevent multiple instances
 	g_hMutex = CreateMutexW(nullptr, FALSE, L"Local\\AudioPlaybackConnector_Mutex");
 	if (GetLastError() == ERROR_ALREADY_EXISTS)
@@ -203,6 +455,19 @@ int APIENTRY wWinMain(_In_ HINSTANCE hInstance,
 	}
 
 	g_hInst = hInstance;
+
+	// 父行程若異常結束（當掉、被工作管理員結束），worker 一律跟著被殺，不留孤兒。
+	g_hJob = CreateJobObjectW(nullptr, nullptr);
+	if (g_hJob)
+	{
+		JOBOBJECT_EXTENDED_LIMIT_INFORMATION jobLimits = {};
+		jobLimits.BasicLimitInformation.LimitFlags = JOB_OBJECT_LIMIT_KILL_ON_JOB_CLOSE;
+		LOG_IF_WIN32_BOOL_FALSE(SetInformationJobObject(g_hJob, JobObjectExtendedLimitInformation, &jobLimits, sizeof(jobLimits)));
+	}
+	else
+	{
+		LOG_LAST_ERROR();
+	}
 
 	winrt::init_apartment();
 
@@ -297,19 +562,35 @@ LRESULT CALLBACK WndProc(HWND hWnd, UINT message, WPARAM wParam, LPARAM lParam)
 			SaveSettings();
 		}
 
-		// 先整批搬出再逐一 Close()：Close() 會同步觸發 StateChanged(Closed)，
-		// 若項目還留在 map 裡，那個回呼會重入式地修改 map。
+		// 先請所有 worker 正常結束，再清掉自己這側的狀態。全程不阻塞：
+		// 沒能及時退出的 worker 會在下面關閉 job 時被一併終止。
+		for (auto& worker : g_workers)
+		{
+			if (worker.second->stopEvent)
+			{
+				SetEvent(worker.second->stopEvent);
+			}
+		}
+
 		auto connections = std::move(g_audioPlaybackConnections);
 		g_audioPlaybackConnections.clear();
-
 		for (auto& item : connections)
 		{
 			SetDisplayStatusSafe(item.second.device, {}, DevicePickerDisplayStatusOptions::None);
-			if (item.second.connection)
-			{
-				item.second.connection.Close();
-			}
 		}
+
+		std::vector<uint64_t> tokens;
+		tokens.reserve(g_workers.size());
+		for (const auto& worker : g_workers)
+		{
+			tokens.push_back(worker.first);
+		}
+		for (auto token : tokens)
+		{
+			DestroyWorker(token);
+		}
+
+		if (g_hJob) { CloseHandle(g_hJob); g_hJob = nullptr; }
 
 		if (!g_reconnect)
 		{
@@ -387,69 +668,102 @@ LRESULT CALLBACK WndProc(HWND hWnd, UINT message, WPARAM wParam, LPARAM lParam)
 	break;
 	case WM_DISCONNECTDEVICE:
 	{
-		/* 這個事件是由使用者觸發的斷線操作，會將對應的連線從 g_audioPlaybackConnections 中移除。 */
+		/* 使用者主動要求斷線。這裡不阻塞等待 worker 結束——只送出停止要求並把項目標成
+		*  Stopping，真正的清理留給 WM_WORKEREXITED。項目刻意不立刻移除，否則使用者在
+		*  worker 還沒退出前又點一次連線，會出現兩個 worker 搶同一個裝置。 */
 		auto payload = std::unique_ptr<DevicePayload>(reinterpret_cast<DevicePayload*>(wParam));
 		auto it = g_audioPlaybackConnections.find(std::wstring(payload->device.Id()));
-		if (it != g_audioPlaybackConnections.end())
+		if (it == g_audioPlaybackConnections.end())
 		{
-			// 順序很重要：先取出 connection、再移除項目，最後才 Close()。
-			// Close() 會同步觸發 StateChanged(Closed)，那個回呼會 PostMessage 過來，
-			// 此時項目已經不在 map 裡，不會造成重入式的修改。
-			auto connection = std::move(it->second.connection);
-			g_audioPlaybackConnections.erase(it);
-			if (connection)
-			{
-				connection.Close();
-			}
-		}
-		SetDisplayStatusSafe(payload->device, {}, DevicePickerDisplayStatusOptions::None);
-		UpdateNotifyIcon();
-	}
-	break;
-	case WM_CONNECTRESULT:
-	{
-		auto result = std::unique_ptr<ConnectResult>(reinterpret_cast<ConnectResult*>(wParam));
-		auto it = g_audioPlaybackConnections.find(result->deviceId);
-		if (it == g_audioPlaybackConnections.end() || it->second.token != result->token)
-		{
-			/* 這次嘗試在進行中就被取消（使用者已斷線或又重連了），
-			*  關掉這條沒人接手的連線，避免變成孤兒。 */
-			if (result->connection && result->connection.State() != AudioPlaybackConnectionState::Closed)
-			{
-				result->connection.Close();
-			}
+			// 沒有對應項目（重複點擊、或狀態已被清掉），把 picker 的顯示歸零就好。
+			SetDisplayStatusSafe(payload->device, {}, DevicePickerDisplayStatusOptions::None);
+			UpdateNotifyIcon();
 			break;
 		}
 
-		if (result->success)
+		if (it->second.state != ConnectionState::Stopping)
 		{
-			it->second.connection = result->connection;
-			it->second.connected = true;
-			SetDisplayStatusSafe(it->second.device, _(L"Connected"), DevicePickerDisplayStatusOptions::ShowDisconnectButton);
-		}
-		else
-		{
-			auto device = it->second.device;
-			g_audioPlaybackConnections.erase(it);
-			if (result->connection && result->connection.State() != AudioPlaybackConnectionState::Closed)
+			it->second.state = ConnectionState::Stopping;
+
+			auto worker = g_workers.find(it->second.token);
+			if (worker != g_workers.end())
 			{
-				result->connection.Close();
+				if (worker->second->stopEvent)
+				{
+					SetEvent(worker->second->stopEvent);
+				}
+				// worker 若卡住不退出就在逾時後強制終止，否則它會一直佔著該裝置。
+				if (!worker->second->stopTimeoutWait && worker->second->process)
+				{
+					LOG_IF_WIN32_BOOL_FALSE(RegisterWaitForSingleObject(&worker->second->stopTimeoutWait,
+						worker->second->process, OnWorkerStopTimeout, worker->second.get(),
+						3000, WT_EXECUTEONLYONCE));
+				}
 			}
-			SetDisplayStatusSafe(device, FormatConnectError(*result), DevicePickerDisplayStatusOptions::ShowRetryButton);
 		}
+
+		// 顯示進度並拿掉斷線按鈕：worker 結束前這個裝置不能再操作，
+		// 沒有這個提示的話使用者再點下去會完全沒有反應。狀態會在 WM_WORKEREXITED 清掉。
+		SetDisplayStatusSafe(it->second.device, _(L"Disconnecting"), DevicePickerDisplayStatusOptions::ShowProgress);
 		UpdateNotifyIcon();
 	}
 	break;
-	case WM_CONNECTIONCLOSED:
+	case WM_WORKERCONNECTED:
 	{
-		/* 再找一次是否有對應的連線目的在於防止*非使用者*觸發的連線關閉事件 (如藍芽距離太遠斷線等)，此時只會有WM_CONNECTIONCLOSED事件發生；
-		*  如果是使用者觸發的斷線事件，會先觸發WM_DISCONNECTDEVICE事件，並將對應的連線從g_audioPlaybackConnections移除，這時WM_CONNECTIONCLOSED事件就不會再做任何事。 */
-		auto payload = std::unique_ptr<ClosedPayload>(reinterpret_cast<ClosedPayload*>(wParam));
-		auto it = g_audioPlaybackConnections.find(payload->deviceId);
-		if (it != g_audioPlaybackConnections.end() && it->second.token == payload->token)
+		auto payload = std::unique_ptr<WorkerEventPayload>(reinterpret_cast<WorkerEventPayload*>(wParam));
+		auto worker = g_workers.find(payload->token);
+		if (worker == g_workers.end())
 		{
-			auto device = it->second.device;
-			g_audioPlaybackConnections.erase(it);
+			break;
+		}
+		auto it = g_audioPlaybackConnections.find(worker->second->deviceId);
+		// token 不符代表這個項目已經被後來的連線嘗試取代，這則通知該丟棄。
+		if (it != g_audioPlaybackConnections.end() && it->second.token == payload->token &&
+			it->second.state == ConnectionState::Connecting)
+		{
+			it->second.state = ConnectionState::Connected;
+			SetDisplayStatusSafe(it->second.device, _(L"Connected"), DevicePickerDisplayStatusOptions::ShowDisconnectButton);
+			UpdateNotifyIcon();
+		}
+	}
+	break;
+	case WM_WORKEREXITED:
+	{
+		/* worker 結束的原因有三種，靠項目當下的狀態區分：
+		*  Connecting -> 從未連上，是連線失敗，要顯示原因與重試按鈕；
+		*  Connected  -> 曾經連上但非使用者觸發（藍牙走遠、系統關閉連線等），靜靜清掉；
+		*  Stopping   -> 使用者主動斷線後的正常結束。 */
+		auto payload = std::unique_ptr<WorkerEventPayload>(reinterpret_cast<WorkerEventPayload*>(wParam));
+		auto worker = g_workers.find(payload->token);
+		if (worker == g_workers.end())
+		{
+			break;
+		}
+
+		const auto deviceId = worker->second->deviceId;
+		DWORD exitCode = static_cast<DWORD>(E_FAIL);
+		if (worker->second->process)
+		{
+			LOG_IF_WIN32_BOOL_FALSE(GetExitCodeProcess(worker->second->process, &exitCode));
+		}
+		DestroyWorker(payload->token);
+
+		auto it = g_audioPlaybackConnections.find(deviceId);
+		if (it == g_audioPlaybackConnections.end() || it->second.token != payload->token)
+		{
+			break;
+		}
+
+		const auto state = it->second.state;
+		auto device = it->second.device;
+		g_audioPlaybackConnections.erase(it);
+
+		if (state == ConnectionState::Connecting)
+		{
+			SetDisplayStatusSafe(device, FormatWorkerError(exitCode), DevicePickerDisplayStatusOptions::ShowRetryButton);
+		}
+		else
+		{
 			SetDisplayStatusSafe(device, {}, DevicePickerDisplayStatusOptions::None);
 		}
 		UpdateNotifyIcon();
@@ -623,84 +937,38 @@ void ConnectDevice(const DeviceInformation& device)
 	auto [it, inserted] = g_audioPlaybackConnections.try_emplace(deviceId);
 	if (!inserted)
 	{
-		// 已經連上或正在連線中，只要把狀態補回 picker 就好。
-		SetDisplayStatusSafe(it->second.device,
-			it->second.connected ? _(L"Connected") : _(L"Connecting"),
-			it->second.connected
-			? DevicePickerDisplayStatusOptions::ShowDisconnectButton
-			: (DevicePickerDisplayStatusOptions::ShowProgress | DevicePickerDisplayStatusOptions::ShowDisconnectButton));
+		switch (it->second.state)
+		{
+		case ConnectionState::Connected:
+			SetDisplayStatusSafe(it->second.device, _(L"Connected"), DevicePickerDisplayStatusOptions::ShowDisconnectButton);
+			break;
+		case ConnectionState::Connecting:
+			SetDisplayStatusSafe(it->second.device, _(L"Connecting"),
+				DevicePickerDisplayStatusOptions::ShowProgress | DevicePickerDisplayStatusOptions::ShowDisconnectButton);
+			break;
+		case ConnectionState::Stopping:
+			// 前一個 worker 還在收尾，此時再開一個會有兩個行程搶同一個裝置。
+			// 維持「中斷連線中」的提示，等 WM_WORKEREXITED 清掉項目後才能重連。
+			SetDisplayStatusSafe(it->second.device, _(L"Disconnecting"), DevicePickerDisplayStatusOptions::ShowProgress);
+			break;
+		}
 		return;
 	}
 
 	const auto token = g_nextConnectToken++;
 	it->second.device = device;
 	it->second.token = token;
-	it->second.connected = false;
+	it->second.state = ConnectionState::Connecting;
 
 	SetDisplayStatusSafe(device, _(L"Connecting"), DevicePickerDisplayStatusOptions::ShowProgress | DevicePickerDisplayStatusOptions::ShowDisconnectButton);
-	OpenConnectionAsync(std::move(deviceId), token);
-}
 
-// 整個連線流程都在背景執行緒上跑，結果一律用 WM_CONNECTRESULT 交回 UI 執行緒。
-// 這裡不可以碰 g_audioPlaybackConnections，也不可以呼叫 _()：Translate() 內部的
-// 快取是非執行緒安全的 static map。
-winrt::fire_and_forget OpenConnectionAsync(std::wstring deviceId, uint64_t token)
-{
-	co_await winrt::resume_background();
-
-	auto result = std::make_unique<ConnectResult>();
-	result->deviceId = deviceId;
-	result->token = token;
-
-	try
+	if (!LaunchWorker(deviceId, token))
 	{
-		auto connection = AudioPlaybackConnection::TryCreateFromId(deviceId);
-		if (!connection)
-		{
-			result->created = false;
-		}
-		else
-		{
-			result->connection = connection;
-
-			connection.StateChanged([token](const auto& sender, const auto&) {
-				if (sender.State() == AudioPlaybackConnectionState::Closed)
-				{
-					auto payload = std::make_unique<ClosedPayload>();
-					payload->deviceId = sender.DeviceId();
-					payload->token = token;
-					PostPayload(WM_CONNECTIONCLOSED, std::move(payload));
-				}
-				});
-
-			co_await connection.StartAsync();
-			auto openResult = co_await connection.OpenAsync();
-
-			result->status = openResult.Status();
-			result->success = result->status == AudioPlaybackConnectionOpenResultStatus::Success;
-			if (result->status == AudioPlaybackConnectionOpenResultStatus::UnknownFailure)
-			{
-				result->error = openResult.ExtendedError();
-			}
-		}
+		g_audioPlaybackConnections.erase(it);
+		SetDisplayStatusSafe(device, _(L"Unknown error"), DevicePickerDisplayStatusOptions::ShowRetryButton);
+		return;
 	}
-	catch (winrt::hresult_error const& ex)
-	{
-		result->success = false;
-		result->status = AudioPlaybackConnectionOpenResultStatus::UnknownFailure;
-		result->error = ex.code();
-		LOG_CAUGHT_EXCEPTION();
-	}
-
-	// 送不出去就沒有人會接手這條連線了（視窗已銷毀，或訊息佇列爆掉）。
-	// 必須明確 Close()：讓 ConnectResult 解構只會 Release() 掉 COM 參考，
-	// 那跟 IClosable::Close() 不是同一個呼叫，不該依賴它來收掉底層傳輸。
-	PostPayload(WM_CONNECTRESULT, std::move(result), [](ConnectResult& rejected) {
-		if (rejected.connection && rejected.connection.State() != AudioPlaybackConnectionState::Closed)
-		{
-			rejected.connection.Close();
-		}
-		});
+	UpdateNotifyIcon();
 }
 
 // 開機重連只用得到 deviceId，解析成 DeviceInformation 之後丟回 UI 執行緒走一般流程。
@@ -717,46 +985,6 @@ winrt::fire_and_forget ConnectDeviceById(std::wstring deviceId)
 	}
 }
 
-// 只在 UI 執行緒呼叫。
-std::wstring FormatConnectError(const ConnectResult& result)
-{
-	if (!result.created)
-	{
-		return _(L"Unknown error");
-	}
-
-	switch (result.status)
-	{
-	case AudioPlaybackConnectionOpenResultStatus::RequestTimedOut:
-		return _(L"The request timed out");
-	case AudioPlaybackConnectionOpenResultStatus::DeniedBySystem:
-		return _(L"The operation was denied by the system");
-	default:
-		break;
-	}
-
-	if (result.error != S_OK)
-	{
-		auto message = winrt::hresult_error(result.error).message();
-		std::wstring formatted(64, L'\0');
-		while (1)
-		{
-			auto written = swprintf(formatted.data(), formatted.size(), L"%s (0x%08X)", message.c_str(), static_cast<uint32_t>(result.error));
-			if (written < 0)
-			{
-				formatted.resize(formatted.size() * 2);
-			}
-			else
-			{
-				formatted.resize(written);
-				break;
-			}
-		}
-		return formatted;
-	}
-
-	return _(L"Unknown error");
-}
 
 void SetupDevicePicker()
 {

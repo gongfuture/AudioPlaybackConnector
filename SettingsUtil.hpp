@@ -60,8 +60,8 @@ void SaveSettings()
 		JsonArray lastDevices;
 		for (const auto& i : g_audioPlaybackConnections)
 		{
-			// 只記住真的連上的裝置，正在連線中的不算。
-			if (i.second.connected)
+			// 只記住真的連上的裝置，正在連線中或正在斷線的不算。
+			if (i.second.state == ConnectionState::Connected)
 			{
 				lastDevices.Append(JsonValue::CreateStringValue(i.first));
 			}

@@ -54,6 +54,10 @@ msgstr "藍牙設定"
 msgid "Connecting"
 msgstr "連線中"
 
+#: AudioPlaybackConnector.cpp:676 AudioPlaybackConnector.cpp:921
+msgid "Disconnecting"
+msgstr "中斷連線中"
+
 #: AudioPlaybackConnector.cpp:322
 msgid "The request timed out"
 msgstr "要求逾時"
