@@ -7,6 +7,7 @@ void SetupFlyout();
 void SetupMenu();
 void ConnectDevice(const DeviceInformation& device);
 winrt::fire_and_forget ConnectDeviceById(std::wstring deviceId);
+winrt::fire_and_forget ClearStaleDisplayStatusAsync();
 void SetupDevicePicker();
 void SetupSvgIcon();
 void UpdateNotifyIcon();
@@ -17,7 +18,7 @@ void SetDisplayStatusSafe(const DeviceInformation& device, std::wstring_view sta
 std::wstring FormatWorkerError(DWORD exitCode);
 size_t CountConnected();
 bool TryGetArgValue(PCWSTR name, std::wstring& value);
-int RunWorkerProcess(std::wstring_view deviceId, std::wstring_view stopEventName, std::wstring_view connectedEventName);
+int RunWorkerProcess(std::wstring_view deviceId, std::wstring_view stopEventName, std::wstring_view connectedEventName, DWORD parentPid);
 bool LaunchWorker(const std::wstring& deviceId, uint64_t token);
 void DestroyWorker(uint64_t token);
 
@@ -95,7 +96,7 @@ bool TryGetArgValue(PCWSTR name, std::wstring& value)
 // ---------------------------------------------------------------------------
 // worker 行程本體：整個行程只服務一條連線，結束碼就是結果。
 // ---------------------------------------------------------------------------
-int RunWorkerProcess(std::wstring_view deviceId, std::wstring_view stopEventName, std::wstring_view connectedEventName)
+int RunWorkerProcess(std::wstring_view deviceId, std::wstring_view stopEventName, std::wstring_view connectedEventName, DWORD parentPid)
 {
 	HRESULT result = E_FAIL;
 
@@ -108,6 +109,17 @@ int RunWorkerProcess(std::wstring_view deviceId, std::wstring_view stopEventName
 		if (!stopEvent || !connectedEvent)
 		{
 			return LOG_HR(HRESULT_FROM_WIN32(GetLastError()));
+		}
+
+		// 自己盯著父行程，不要只依賴 job object：AssignProcessToJobObject 在父行程
+		// 本身已經被放進某個 job 時（偵錯器、工作排程器、容器、防毒沙箱）可能失敗，
+		// 那樣父行程被強制結束就會留下孤兒 worker 一直佔著 A2DP 連線。
+		// 開不到 handle 也不算致命，只是少一層保險。
+		wil::unique_handle parentProcess;
+		if (parentPid != 0)
+		{
+			parentProcess.reset(OpenProcess(SYNCHRONIZE, FALSE, parentPid));
+			LOG_LAST_ERROR_IF_NULL(parentProcess.get());
 		}
 
 		auto connection = AudioPlaybackConnection::TryCreateFromId(deviceId);
@@ -151,8 +163,10 @@ int RunWorkerProcess(std::wstring_view deviceId, std::wstring_view stopEventName
 		// 通知父行程連線已開啟。在這之前結束都會被父行程視為連線失敗。
 		SetEvent(connectedEvent.get());
 
-		HANDLE handles[2] = { closedHandle, stopEvent.get() };
-		WaitForMultipleObjects(2, handles, FALSE, INFINITE);
+		// 三種結束理由：連線被關閉、父行程要求停止、父行程消失了。
+		HANDLE handles[3] = { closedHandle, stopEvent.get(), parentProcess.get() };
+		const DWORD handleCount = parentProcess ? 3 : 2;
+		WaitForMultipleObjects(handleCount, handles, FALSE, INFINITE);
 
 		connection.Close();
 		result = APC_S_CLOSED;
@@ -218,8 +232,10 @@ bool LaunchWorker(const std::wstring& deviceId, uint64_t token)
 	}
 
 	// 用同一份 exe，不再複製檔案：需要的只是行程隔離。
+	// 帶上自己的 PID，讓 worker 能盯著父行程、在父行程消失時自行退出。
 	auto commandLine = L"\"" + GetModuleFsPath(g_hInst).wstring() + L"\" --worker \"" + deviceId +
-		L"\" --stopEvent \"" + stopName + L"\" --connectedEvent \"" + connectedName + L"\"";
+		L"\" --stopEvent \"" + stopName + L"\" --connectedEvent \"" + connectedName +
+		L"\" --parentPid " + std::to_wstring(GetCurrentProcessId());
 
 	STARTUPINFOW startupInfo = { sizeof(startupInfo) };
 	PROCESS_INFORMATION processInfo = {};
@@ -414,7 +430,14 @@ int APIENTRY wWinMain(_In_ HINSTANCE hInstance,
 		{
 			return E_INVALIDARG;
 		}
-		return RunWorkerProcess(workerDeviceId, stopEventName, connectedEventName);
+		// --parentPid 是選用的：沒有它 worker 一樣能運作，只是少一層孤兒防護。
+		std::wstring parentPidText;
+		DWORD parentPid = 0;
+		if (TryGetArgValue(L"--parentPid", parentPidText))
+		{
+			parentPid = static_cast<DWORD>(wcstoul(parentPidText.c_str(), nullptr, 10));
+		}
+		return RunWorkerProcess(workerDeviceId, stopEventName, connectedEventName, parentPid);
 	}
 
 	// Prevent multiple instances
@@ -433,12 +456,20 @@ int APIENTRY wWinMain(_In_ HINSTANCE hInstance,
 	g_hInst = hInstance;
 
 	// 父行程若異常結束（當掉、被工作管理員結束），worker 一律跟著被殺，不留孤兒。
+	// 這只是第一層：worker 自己也會盯著父行程（見 --parentPid），所以就算這裡
+	// 整個失敗，孤兒防護仍然成立。
 	g_hJob = CreateJobObjectW(nullptr, nullptr);
 	if (g_hJob)
 	{
 		JOBOBJECT_EXTENDED_LIMIT_INFORMATION jobLimits = {};
 		jobLimits.BasicLimitInformation.LimitFlags = JOB_OBJECT_LIMIT_KILL_ON_JOB_CLOSE;
-		LOG_IF_WIN32_BOOL_FALSE(SetInformationJobObject(g_hJob, JobObjectExtendedLimitInformation, &jobLimits, sizeof(jobLimits)));
+		if (!SetInformationJobObject(g_hJob, JobObjectExtendedLimitInformation, &jobLimits, sizeof(jobLimits)))
+		{
+			// 沒有 KILL_ON_JOB_CLOSE 的 job 毫無用處，留著只會讓人誤以為有保護。
+			LOG_LAST_ERROR();
+			CloseHandle(g_hJob);
+			g_hJob = nullptr;
+		}
 	}
 	else
 	{
@@ -505,6 +536,9 @@ int APIENTRY wWinMain(_In_ HINSTANCE hInstance,
 	WM_TASKBAR_CREATED = RegisterWindowMessageW(L"TaskbarCreated");
 	LOG_LAST_ERROR_IF(WM_TASKBAR_CREATED == 0);
 
+	// 先清掉上一輪被強制結束時殘留的顯示狀態，再走重連。兩者都是非同步的，
+	// 但 WM_CLEARSTALESTATUS 會跳過已經有 entry 的裝置，所以順序衝突不會有問題。
+	ClearStaleDisplayStatusAsync();
 	PostMessageW(g_hWnd, WM_CONNECTDEVICE, 0, 0);
 
 	if (g_showNotification)
@@ -538,12 +572,7 @@ LRESULT CALLBACK WndProc(HWND hWnd, UINT message, WPARAM wParam, LPARAM lParam)
 			SaveSettings();
 		}
 
-		// 先送出停止要求，讓剛好來得及的 worker 自己收尾。這裡不等它們：
-		// 下面的 DestroyWorker 會把還在執行的直接 TerminateProcess，
-		// 所以實務上多數 worker 是被硬砍的。可以接受——行程結束時核心會關閉
-		// 它所有的 handle，音訊服務一樣會察覺客戶端消失並拆掉 A2DP 連線，
-		// 這也正是原本 worker 設計依賴的機制。
-		// （關閉 job 是另一層保險，針對的是父行程異常死亡、跑不到這裡的情況。）
+		// 先送出停止要求，讓每個 worker 開始自己收尾（connection.Close()）。
 		for (auto& worker : g_workers)
 		{
 			if (worker.second->stopEvent)
@@ -552,12 +581,43 @@ LRESULT CALLBACK WndProc(HWND hWnd, UINT message, WPARAM wParam, LPARAM lParam)
 			}
 		}
 
+		// 托盤圖示先撤掉。下面要等 worker 收尾，不先撤的話使用者會覺得程式卡住。
+		Shell_NotifyIconW(NIM_DELETE, &g_nid);
+
 		auto connections = std::move(g_audioPlaybackConnections);
 		g_audioPlaybackConnections.clear();
 		for (auto& item : connections)
 		{
 			SetDisplayStatusSafe(item.second.device, {}, DevicePickerDisplayStatusOptions::None);
 		}
+
+		if (!g_reconnect)
+		{
+			SaveSettings();
+		}
+
+
+		/* 給 worker 一個有上限的機會自己結束，逾時還沒走的則由 DestroyWorker 強制終止。
+		*  直接 TerminateProcess 的話，核心要2~5 秒才會拆掉 A2DP 連線，
+		*  使用者會聽到音訊在程式離開之後還繼續播。
+		*  這裡阻塞是安全的：picker 已經關閉、沒有待處理的使用者互動，先前造成
+		*  死鎖的重入條件在這個時間點都不成立。
+
+		*  目前測試直接關閉主程式Worker還是可以正常關閉連線(沒有聲音會殘留)，
+		*  如果多裝置情況下有問題可以再把下面程式碼的註解取消掉。*/
+		//std::vector<HANDLE> processes;
+		//processes.reserve(g_workers.size());
+		//for (const auto& worker : g_workers)
+		//{
+		//	if (worker.second->process)
+		//	{
+		//		processes.push_back(worker.second->process.get());
+		//	}
+		//}
+		//if (!processes.empty() && processes.size() <= MAXIMUM_WAIT_OBJECTS)
+		//{
+		//	WaitForMultipleObjects(static_cast<DWORD>(processes.size()), processes.data(), TRUE, 2000);
+		//}
 
 		std::vector<uint64_t> tokens;
 		tokens.reserve(g_workers.size());
@@ -570,13 +630,9 @@ LRESULT CALLBACK WndProc(HWND hWnd, UINT message, WPARAM wParam, LPARAM lParam)
 			DestroyWorker(token);
 		}
 
+		// 關閉 job 是另一層保險，針對父行程異常死亡、根本跑不到這裡的情況。
 		if (g_hJob) { CloseHandle(g_hJob); g_hJob = nullptr; }
 
-		if (!g_reconnect)
-		{
-			SaveSettings();
-		}
-		Shell_NotifyIconW(NIM_DELETE, &g_nid);
 		if (g_hTrayIcon) { DestroyIcon(g_hTrayIcon); g_hTrayIcon = nullptr; }
 		if (g_hMutex) { CloseHandle(g_hMutex); g_hMutex = nullptr; }
 		PostQuitMessage(0);
@@ -675,9 +731,16 @@ LRESULT CALLBACK WndProc(HWND hWnd, UINT message, WPARAM wParam, LPARAM lParam)
 				// worker 若卡住不退出就在逾時後強制終止，否則它會一直佔著該裝置。
 				if (!worker->second->stopTimeoutWait && worker->second->process)
 				{
-					LOG_IF_WIN32_BOOL_FALSE(RegisterWaitForSingleObject(worker->second->stopTimeoutWait.put(),
+					if (!RegisterWaitForSingleObject(worker->second->stopTimeoutWait.put(),
 						worker->second->process.get(), OnWorkerStopTimeout, worker->second.get(),
-						3000, WT_EXECUTEONLYONCE));
+						3000, WT_EXECUTEONLYONCE))
+					{
+						// 註冊不到逾時保險，就別給那 3 秒寬限期了：寧可現在就砍掉。
+						// 否則一個不理會 stop event 的 worker 會讓這個項目永遠停在
+						// Stopping，該裝置到程式重啟前都無法再連線。
+						LOG_LAST_ERROR();
+						TerminateProcess(worker->second->process.get(), static_cast<UINT>(APC_S_CLOSED));
+					}
 				}
 			}
 		}
@@ -747,6 +810,16 @@ LRESULT CALLBACK WndProc(HWND hWnd, UINT message, WPARAM wParam, LPARAM lParam)
 			SetDisplayStatusSafe(device, {}, DevicePickerDisplayStatusOptions::None);
 		}
 		UpdateNotifyIcon();
+	}
+	break;
+	case WM_CLEARSTALESTATUS:
+	{
+		auto payload = std::unique_ptr<DevicePayload>(reinterpret_cast<DevicePayload*>(wParam));
+		// 這一輪已經在用的裝置不能碰，否則會把同時進行中的重連狀態洗掉。
+		if (g_audioPlaybackConnections.find(std::wstring(payload->device.Id())) == g_audioPlaybackConnections.end())
+		{
+			SetDisplayStatusSafe(payload->device, {}, DevicePickerDisplayStatusOptions::None);
+		}
 	}
 	break;
 	case WM_CONNECTDEVICE:
@@ -949,6 +1022,25 @@ void ConnectDevice(const DeviceInformation& device)
 		return;
 	}
 	UpdateNotifyIcon();
+}
+
+// DevicePicker 的顯示狀態存在本行程之外，會活過行程結束。正常離開時 WM_DESTROY 會
+// 把它清乾淨，但被強制結束（工作管理員、當掉）時沒有任何清理程式碼跑得到，於是下次
+// 啟動時那個裝置會頂著上一輪殘留的「Connected」。啟動時主動掃一次把它清掉。
+winrt::fire_and_forget ClearStaleDisplayStatusAsync()
+{
+	try
+	{
+		auto devices = co_await DeviceInformation::FindAllAsync(AudioPlaybackConnection::GetDeviceSelector());
+		for (const auto& device : devices)
+		{
+			PostPayload(WM_CLEARSTALESTATUS, std::make_unique<DevicePayload>(device));
+		}
+	}
+	catch (winrt::hresult_error const&)
+	{
+		LOG_CAUGHT_EXCEPTION();
+	}
 }
 
 // 開機重連只用得到 deviceId，解析成 DeviceInformation 之後丟回 UI 執行緒走一般流程。
