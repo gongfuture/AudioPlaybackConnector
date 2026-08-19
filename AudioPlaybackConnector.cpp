@@ -168,7 +168,16 @@ int RunWorkerProcess(std::wstring_view deviceId, std::wstring_view stopEventName
 		const DWORD handleCount = parentProcess ? 3 : 2;
 		WaitForMultipleObjects(handleCount, handles, FALSE, INFINITE);
 
-		connection.Close();
+		// 這裡絕對不要呼叫 connection.Close()：A2DP 的 sink 角色（電腦當藍牙喇叭）
+		// 在系統上只有一份，不是每個裝置一份。Close() 會叫用內部存著的 unregister
+		// callback 並把 shared_ptr<BluetoothA2dpPlaybackConnection> 的參考數丟到 0，
+		// 其解構函式接著會 Resolve 出 IA2dpSinkPlaybackConnection 並呼叫它去關閉 sink
+		// （Windows.Media.Devices.dll，~BluetoothA2dpPlaybackConnection+0x9e 起）。
+		// 那一下會把整個 sink 關掉，其他 worker 正在播的裝置會一起斷線。
+		//
+		// 直接讓行程結束就不會走到那段：外層 WinRT 物件還被內部的狀態通知註冊持有，
+		// 不會解構，清理改由藍牙服務依「哪個 client 消失了」逐一回收，只影響這一條。
+		// 上游從一開始就是這樣做的（df3f32f），不是疏漏。
 		result = APC_S_CLOSED;
 	}
 	catch (...)
@@ -572,7 +581,8 @@ LRESULT CALLBACK WndProc(HWND hWnd, UINT message, WPARAM wParam, LPARAM lParam)
 			SaveSettings();
 		}
 
-		// 先送出停止要求，讓每個 worker 開始自己收尾（connection.Close()）。
+		// 先送出停止要求，讓每個 worker 自己結束行程（連線的拆除交給行程結束，
+		// 原因見 RunWorkerProcess 裡不呼叫 Close() 的說明）。
 		for (auto& worker : g_workers)
 		{
 			if (worker.second->stopEvent)
