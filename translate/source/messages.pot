@@ -52,6 +52,46 @@ msgstr ""
 msgid "Connecting"
 msgstr ""
 
+#: AudioPlaybackConnector.cpp:676 AudioPlaybackConnector.cpp:921
+msgid "Disconnecting"
+msgstr ""
+
+#: AudioPlaybackConnector.cpp:322
+msgid "Reconnecting"
+msgstr ""
+
+#: AudioPlaybackConnector.cpp:322
+msgid "Reconnect devices dropped by another disconnect"
+msgstr ""
+
+#: AudioPlaybackConnector.cpp:322
+msgid "Closed by the system (another device was disconnected)"
+msgstr ""
+
+#: AudioPlaybackConnector.cpp:322
+msgid "Other devices have been reconnected"
+msgstr ""
+
+#: AudioPlaybackConnector.cpp:322
+msgid "Windows drops all Bluetooth audio devices when one is disconnected."
+msgstr ""
+
+#: AudioPlaybackConnector.cpp:322
+msgid "You can turn this off from the tray menu."
+msgstr ""
+
+#: AudioPlaybackConnector.cpp:322
+msgid ""
+"Windows can only act as a Bluetooth speaker for one connection at a time, so "
+"disconnecting any device also drops the others. This is a Windows "
+"limitation, not a bug. When this is on, the dropped devices are reconnected "
+"automatically after a few seconds."
+msgstr ""
+
+#: AudioPlaybackConnector.cpp:322
+msgid "The connection was closed by the system"
+msgstr ""
+
 #: AudioPlaybackConnector.cpp:322
 msgid "The request timed out"
 msgstr ""

@@ -7,6 +7,8 @@ void DefaultSettings()
 {
 	g_reconnect = false;
 	g_showNotification = true;
+	g_autoReconnectOthers = true;
+	g_cascadeExplained = false;
 	g_lastDevices.clear();
 }
 
@@ -34,9 +36,15 @@ void LoadSettings()
 		std::wstring utf16 = Utf8ToUtf16(string);
 		auto jsonObj = JsonObject::Parse(utf16);
 		g_reconnect = jsonObj.Lookup(L"reconnect").GetBoolean();
-		
+
 		if (jsonObj.HasKey(L"showNotification"))
 			g_showNotification = jsonObj.Lookup(L"showNotification").GetBoolean();
+
+		if (jsonObj.HasKey(L"autoReconnectOthers"))
+			g_autoReconnectOthers = jsonObj.Lookup(L"autoReconnectOthers").GetBoolean();
+
+		if (jsonObj.HasKey(L"cascadeExplained"))
+			g_cascadeExplained = jsonObj.Lookup(L"cascadeExplained").GetBoolean();
 
 		auto lastDevices = jsonObj.Lookup(L"lastDevices").GetArray();
 		g_lastDevices.reserve(lastDevices.Size());
@@ -56,11 +64,17 @@ void SaveSettings()
 		JsonObject jsonObj;
 		jsonObj.Insert(L"reconnect", JsonValue::CreateBooleanValue(g_reconnect));
 		jsonObj.Insert(L"showNotification", JsonValue::CreateBooleanValue(g_showNotification));
+		jsonObj.Insert(L"autoReconnectOthers", JsonValue::CreateBooleanValue(g_autoReconnectOthers));
+		jsonObj.Insert(L"cascadeExplained", JsonValue::CreateBooleanValue(g_cascadeExplained));
 
 		JsonArray lastDevices;
 		for (const auto& i : g_audioPlaybackConnections)
 		{
-			lastDevices.Append(JsonValue::CreateStringValue(i.first));
+			// 只記住真的連上的裝置，正在連線中或正在斷線的不算。
+			if (i.second.state == ConnectionState::Connected)
+			{
+				lastDevices.Append(JsonValue::CreateStringValue(i.first));
+			}
 		}
 		jsonObj.Insert(L"lastDevices", lastDevices);
 
