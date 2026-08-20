@@ -7,7 +7,7 @@ on:
 
 jobs:
   build:
-    runs-on: windows-latest
+    runs-on: windows-2022
 
     steps:
     - uses: actions/checkout@v4
@@ -15,10 +15,10 @@ jobs:
         submodules: true
 
     - name: Setup MSBuild
-      uses: microsoft/setup-msbuild@v2
+      uses: microsoft/setup-msbuild@v3
 
     - name: Setup NuGet
-      uses: nuget/setup-nuget@v2
+      uses: nuget/setup-nuget@v3
       with:
         nuget-version: latest
 
@@ -51,25 +51,69 @@ jobs:
     - name: Restore NuGet packages
       run: nuget restore AudioPlaybackConnector.sln
 
+
+    - name: Build x86 Release
+      shell: powershell
+      run: |
+        msbuild AudioPlaybackConnector.sln `
+          -p:Configuration=Release `
+          -p:Platform=x86
+
     - name: Build x64 Release
       shell: powershell
       run: |
         msbuild AudioPlaybackConnector.sln `
           -p:Configuration=Release `
           -p:Platform=x64
-  
+
+    - name: Build ARM Release
+      shell: powershell
+      run: |
+        msbuild AudioPlaybackConnector.sln `
+          -p:Configuration=Release `
+          -p:Platform=ARM
+
+    - name: Build ARM64 Release
+      shell: powershell
+      run: |
+        msbuild AudioPlaybackConnector.sln `
+          -p:Configuration=Release `
+          -p:Platform=ARM64
+
+
+    - name: Upload x86 artifact
+      uses: actions/upload-artifact@v4
+      with:
+        name: AudioPlaybackConnector-x86
+        path: Release/Win32/AudioPlaybackConnector32.exe
+
     - name: Upload x64 artifact
       uses: actions/upload-artifact@v4
       with:
         name: AudioPlaybackConnector-x64
-        path: x64/Release/AudioPlaybackConnector64.exe
+        path: Release/x64/AudioPlaybackConnector64.exe
+
+    - name: Upload ARM artifact
+      uses: actions/upload-artifact@v4
+      with: 
+        name: AudioPlaybackConnector-ARM
+        path: Release/ARM/AudioPlaybackConnectorARM.exe
+
+    - name: Upload ARM64 artifact
+      uses: actions/upload-artifact@v4
+      with:
+        name: AudioPlaybackConnector-ARM64
+        path: Release/ARM64/AudioPlaybackConnectorARM64.exe
 
     - name: Release
       uses: softprops/action-gh-release@v2
       if: github.ref_type == 'tag'
       with:
         files: |
-          x64/Release/AudioPlaybackConnector64.exe
+          Release/Win32/AudioPlaybackConnector32.exe
+          Release/x64/AudioPlaybackConnector64.exe
+          Release/ARM/AudioPlaybackConnectorARM.exe
+          Release/ARM64/AudioPlaybackConnectorARM64.exe
         tag_name: ${{ github.ref }}
         release_name: ${{ github.ref }}
         draft: true
