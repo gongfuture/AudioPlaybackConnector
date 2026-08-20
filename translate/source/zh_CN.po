@@ -59,6 +59,45 @@ msgid "Disconnecting"
 msgstr "正在断开连接"
 
 #: AudioPlaybackConnector.cpp:322
+msgid "Reconnecting"
+msgstr "正在重新连接"
+
+#: AudioPlaybackConnector.cpp:322
+msgid "Reconnect devices dropped by another disconnect"
+msgstr "自动接回被连带中断的设备"
+
+#: AudioPlaybackConnector.cpp:322
+msgid "Closed by the system (another device was disconnected)"
+msgstr "已被系统关闭（断开其他设备所致）"
+
+#: AudioPlaybackConnector.cpp:322
+msgid "Other devices have been reconnected"
+msgstr "其他设备已自动重新连接"
+
+#: AudioPlaybackConnector.cpp:322
+msgid "Windows drops all Bluetooth audio devices when one is disconnected."
+msgstr "在 Windows 上断开任何一台蓝牙音频设备，其他设备都会跟着断开。"
+
+#: AudioPlaybackConnector.cpp:322
+msgid "You can turn this off from the tray menu."
+msgstr "可在右键菜单关闭这个行为。"
+
+#: AudioPlaybackConnector.cpp:322
+msgid ""
+"Windows can only act as a Bluetooth speaker for one connection at a time, so "
+"disconnecting any device also drops the others. This is a Windows "
+"limitation, not a bug. When this is on, the dropped devices are reconnected "
+"automatically after a few seconds."
+msgstr ""
+"Windows 一次只能以一条连接扮演蓝牙音箱，所以断开任何一台设备，其他设备都会跟着"
+"断开。这是 Windows 的限制，不是程序的问题。开启这个选项时，被连带中断的设备会"
+"在几秒后自动重新连接。"
+
+#: AudioPlaybackConnector.cpp:322
+msgid "The connection was closed by the system"
+msgstr "连接已被系统关闭"
+
+#: AudioPlaybackConnector.cpp:322
 msgid "The request timed out"
 msgstr "请求超时"
 

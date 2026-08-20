@@ -5,6 +5,7 @@
 LRESULT CALLBACK WndProc(HWND, UINT, WPARAM, LPARAM);
 void SetupFlyout();
 void SetupMenu();
+void AttachAutoReconnectTooltip(const MenuFlyoutItem& item, const MenuFlyout& menu);
 void ConnectDevice(const DeviceInformation& device);
 winrt::fire_and_forget ConnectDeviceById(std::wstring deviceId);
 winrt::fire_and_forget ClearStaleDisplayStatusAsync();
@@ -14,6 +15,8 @@ void UpdateNotifyIcon();
 bool GetStartupStatus();
 void SetStartupStatus(bool status);
 void ShowInitialToastNotification();
+void ShowToastNotification(std::wstring_view titleText, std::wstring_view messageText, int expireSeconds, std::wstring_view extraText = {});
+void ShowCascadeExplanationToast();
 void SetDisplayStatusSafe(const DeviceInformation& device, std::wstring_view status, DevicePickerDisplayStatusOptions options);
 std::wstring FormatWorkerError(DWORD exitCode);
 size_t CountConnected();
@@ -144,41 +147,69 @@ int RunWorkerProcess(std::wstring_view deviceId, std::wstring_view stopEventName
 
 		connection.StartAsync().get();
 		const auto openResult = connection.OpenAsync().get();
+		bool opened = false;
 		switch (openResult.Status())
 		{
 		case AudioPlaybackConnectionOpenResultStatus::Success:
+			opened = true;
 			break;
 		case AudioPlaybackConnectionOpenResultStatus::RequestTimedOut:
-			return LOG_HR(APC_E_REQUEST_TIMED_OUT);
+			result = LOG_HR(APC_E_REQUEST_TIMED_OUT);
+			break;
 		case AudioPlaybackConnectionOpenResultStatus::DeniedBySystem:
-			return LOG_HR(APC_E_DENIED_BY_SYSTEM);
+			result = LOG_HR(APC_E_DENIED_BY_SYSTEM);
+			break;
 		default:
 		{
 			// 把真正的失敗原因帶回去（例如裝置已被占用），別讓它變成一句 Unknown error。
 			const auto extended = static_cast<HRESULT>(openResult.ExtendedError());
-			return LOG_HR(extended != S_OK ? extended : E_FAIL);
+			result = LOG_HR(extended != S_OK ? extended : E_FAIL);
+			break;
 		}
 		}
 
-		// 通知父行程連線已開啟。在這之前結束都會被父行程視為連線失敗。
-		SetEvent(connectedEvent.get());
+		if (opened)
+		{
+			// 通知父行程連線已開啟。在這之前結束都會被父行程視為連線失敗。
+			SetEvent(connectedEvent.get());
 
-		// 三種結束理由：連線被關閉、父行程要求停止、父行程消失了。
-		HANDLE handles[3] = { closedHandle, stopEvent.get(), parentProcess.get() };
-		const DWORD handleCount = parentProcess ? 3 : 2;
-		WaitForMultipleObjects(handleCount, handles, FALSE, INFINITE);
+			// 三種結束理由：連線被關閉、父行程要求停止、父行程消失了。
+			HANDLE handles[3] = { closedHandle, stopEvent.get(), parentProcess.get() };
+			const DWORD handleCount = parentProcess ? 3 : 2;
+			const DWORD waitResult = WaitForMultipleObjects(handleCount, handles, FALSE, INFINITE);
+			switch (waitResult)
+			{
+			case WAIT_OBJECT_0:
+				result = APC_S_REMOTE_CLOSED;
+				break;
+			case WAIT_OBJECT_0 + 1:
+				result = APC_S_STOPPED;
+				break;
+			case WAIT_OBJECT_0 + 2:
+				result = APC_S_PARENT_GONE;
+				break;
+			default:
+				result = LOG_HR(HRESULT_FROM_WIN32(GetLastError()));
+				break;
+			}
+		}
 
-		// 這裡絕對不要呼叫 connection.Close()：A2DP 的 sink 角色（電腦當藍牙喇叭）
-		// 在系統上只有一份，不是每個裝置一份。Close() 會叫用內部存著的 unregister
-		// callback 並把 shared_ptr<BluetoothA2dpPlaybackConnection> 的參考數丟到 0，
-		// 其解構函式接著會 Resolve 出 IA2dpSinkPlaybackConnection 並呼叫它去關閉 sink
-		// （Windows.Media.Devices.dll，~BluetoothA2dpPlaybackConnection+0x9e 起）。
-		// 那一下會把整個 sink 關掉，其他 worker 正在播的裝置會一起斷線。
-		//
-		// 直接讓行程結束就不會走到那段：外層 WinRT 物件還被內部的狀態通知註冊持有，
-		// 不會解構，清理改由藍牙服務依「哪個 client 消失了」逐一回收，只影響這一條。
-		// 上游從一開始就是這樣做的（df3f32f），不是疏漏。
-		result = APC_S_CLOSED;
+		/* 這裡什麼都不用做，讓 connection 正常解構即可。
+		*
+		*  A2DP 的 sink（電腦當藍牙喇叭）在系統上只有一份，不是每個裝置一份，而且
+		*  「拆掉任何一條連線」就會把它整個關掉，其他 worker 正在播的裝置一起斷線。
+		*  這一點沒有辦法迴避，以下三條路都試過、結果相同：
+		*    1. 明確呼叫 connection.Close()
+		*       -> 內部 shared_ptr<BluetoothA2dpPlaybackConnection> 掉到 0，其解構函式
+		*          Resolve 出 IA2dpSinkPlaybackConnection 並關掉 sink
+		*          （Windows.Media.Devices.dll，~BluetoothA2dpPlaybackConnection+0x9e）。
+		*    2. 不呼叫 Close()，讓區域變數解構
+		*       -> 一模一樣：~AudioPlaybackConnection+0x46 自己就會呼叫 Close()。
+		*    3. detach_abi 洩漏參考 + TerminateProcess 自殺，連解構都不跑
+		*       -> 藍牙服務回收這個 client 時照樣把 sink 關掉，只是慢個 2~5 秒，
+		*          而且那幾秒裡本裝置還在播，斷線反應變遲鈍。
+		*
+		*  所以就選最單純、反應也最快的做法：正常解構。 */
 	}
 	catch (...)
 	{
@@ -305,6 +336,10 @@ std::wstring FormatWorkerError(DWORD exitCode)
 	const auto hr = static_cast<HRESULT>(exitCode);
 	switch (hr)
 	{
+	case APC_S_REMOTE_CLOSED:
+		return _(L"The connection was closed by the system");
+	case APC_S_PARENT_GONE:
+		return _(L"Unknown error");
 	case APC_E_REQUEST_TIMED_OUT:
 		return _(L"The request timed out");
 	case APC_E_DENIED_BY_SYSTEM:
@@ -731,6 +766,22 @@ LRESULT CALLBACK WndProc(HWND hWnd, UINT message, WPARAM wParam, LPARAM lParam)
 		{
 			it->second.state = ConnectionState::Stopping;
 
+			// 拆掉這條連線會把系統唯一的 A2DP sink 一起關掉，此刻還連著的其他裝置
+			// 會在接下來幾秒內被連帶斷開。把它們逐一登記起來，WM_WORKEREXITED
+			// 才分得出「被這次操作連累的」和「自己走遠的」。
+			const auto now = GetTickCount64();
+			for (auto iter = g_cascadeCandidates.begin(); iter != g_cascadeCandidates.end();)
+			{
+				iter = iter->second <= now ? g_cascadeCandidates.erase(iter) : std::next(iter);
+			}
+			for (const auto& other : g_audioPlaybackConnections)
+			{
+				if (other.first != it->first && other.second.state == ConnectionState::Connected)
+				{
+					g_cascadeCandidates[other.first] = now + CASCADE_WINDOW_MS;
+				}
+			}
+
 			auto worker = g_workers.find(it->second.token);
 			if (worker != g_workers.end())
 			{
@@ -815,6 +866,44 @@ LRESULT CALLBACK WndProc(HWND hWnd, UINT message, WPARAM wParam, LPARAM lParam)
 		{
 			SetDisplayStatusSafe(device, FormatWorkerError(exitCode), DevicePickerDisplayStatusOptions::ShowRetryButton);
 		}
+		else if (state == ConnectionState::Connected && static_cast<HRESULT>(exitCode) != APC_S_STOPPED)
+		{
+			// 曾經連上、但不是使用者按下斷線造成的結束。查一下是不是剛才那次
+			// 主動斷線的連帶受害者：登記過、還沒過期就算，而且取用後立刻移除，
+			// 所以同一次事件裡每台裝置只會自動接一次。
+			bool cascaded = false;
+			if (static_cast<HRESULT>(exitCode) == APC_S_REMOTE_CLOSED)
+			{
+				auto candidate = g_cascadeCandidates.find(deviceId);
+				if (candidate != g_cascadeCandidates.end())
+				{
+					cascaded = GetTickCount64() <= candidate->second;
+					g_cascadeCandidates.erase(candidate);
+				}
+			}
+
+			if (cascaded && g_autoReconnectOthers)
+			{
+				// 被剛才那次主動斷線連累的。使用者沒有要斷這台，所以接回來。
+				// 不能馬上接：sink 還在拆，太早連上去會直接失敗，所以排進計時器。
+				g_pendingAutoReconnect.push_back(deviceId);
+				SetTimer(hWnd, TIMER_AUTORECONNECT, AUTORECONNECT_DELAY_MS, nullptr);
+				SetDisplayStatusSafe(device, _(L"Reconnecting"), DevicePickerDisplayStatusOptions::ShowProgress);
+				ShowCascadeExplanationToast();
+			}
+			else if (cascaded)
+			{
+				// 確實是被連累的，只是使用者關掉了自動重連。這裡才能講「中斷其他裝置
+				// 所致」——一般的斷線（走遠、對方主動斷開）不能用這句，那會是錯的。
+				SetDisplayStatusSafe(device, _(L"Closed by the system (another device was disconnected)"), DevicePickerDisplayStatusOptions::ShowRetryButton);
+			}
+			else
+			{
+				// 裝置走遠或對方主動斷開。以前這種情況會靜靜地消失，使用者只看到
+				// 裝置不見了；現在把原因顯示出來。
+				SetDisplayStatusSafe(device, FormatWorkerError(exitCode), DevicePickerDisplayStatusOptions::ShowRetryButton);
+			}
+		}
 		else
 		{
 			SetDisplayStatusSafe(device, {}, DevicePickerDisplayStatusOptions::None);
@@ -832,6 +921,24 @@ LRESULT CALLBACK WndProc(HWND hWnd, UINT message, WPARAM wParam, LPARAM lParam)
 		}
 	}
 	break;
+	case WM_TIMER:
+		if (wParam == TIMER_AUTORECONNECT)
+		{
+			KillTimer(hWnd, TIMER_AUTORECONNECT);
+			// 先把清單搬走：ConnectDeviceById 是非同步的，之後的連帶斷線會再往
+			// g_pendingAutoReconnect 裡塞新的東西，不能邊走邊改。
+			auto pending = std::move(g_pendingAutoReconnect);
+			g_pendingAutoReconnect.clear();
+			for (const auto& deviceId : pending)
+			{
+				// 這段期間使用者可能已經自己把它接回來了，那就別插手。
+				if (g_audioPlaybackConnections.find(deviceId) == g_audioPlaybackConnections.end())
+				{
+					ConnectDeviceById(deviceId);
+				}
+			}
+		}
+		break;
 	case WM_CONNECTDEVICE:
 		if (g_reconnect)
 		{
@@ -882,9 +989,96 @@ void SetupFlyout()
 	g_xamlFlyout = flyout;
 }
 
+/* 「自動接回被連帶中斷的裝置」那個選項的說明提示。整套行為都收在這裡，是因為它是
+*  一團為了繞過 UWP ToolTip 限制而生的東西，跟選單本身的組裝無關；出問題要修、或是
+*  將來想整個拿掉，都只動這個函式和 SetupMenu 裡呼叫它的那一行。
+*
+*  為什麼需要提示：選單標籤只放得下「做什麼」，放不下「為什麼需要這個選項」。
+*  完整說明是在連帶斷線真的發生時用 toast 講的（只講一次），這裡是給事後回到選單、
+*  想知道這個開關是幹嘛的人看的。
+*
+*  為什麼這麼繞：
+*   1. 提示一定要透過 ToolTipService 掛上去。自己 new 一個 ToolTip 然後直接設 IsOpen
+*      會回 E_POINTER 並丟出例外——缺的是 service 建立的 owner 關聯，補 XamlRoot 沒用，
+*      PlacementTarget 只給位置不給歸屬。
+*   2. 但 ToolTipService 會跑一個自動關閉計時器，時間到就把提示收走，長度在 UWP 沒有
+*      開放調整（WPF 的 ToolTipService.ShowDuration 沒有對應的 UWP API）。說明只要寫得
+*      完整一點就一定來不及讀完。微軟自己把這個計時器認定為無障礙缺陷
+*      （microsoft-ui-xaml#1283，"Persistent: remove current auto-dismiss timeout"），
+*      但修正落在 WinUI 3，而 XAML Islands 用的 Windows.UI.Xaml 已經凍結，等不到。
+*   3. 所以：由我們搶在 service 的 hover 計時器之前先開，位置才會一律照 PlacementTarget
+*      走（service 自動開啟是相對游標定位的，兩者混用位置會跳）。游標離開時也得自己關，
+*      因為被我們手動開過之後 service 就不再管它了。
+*
+*  所有 IsOpen 都包了 try/catch：提示只是輔助說明，再怎麼樣都不該把程式帶走。 */
+void AttachAutoReconnectTooltip(const MenuFlyoutItem& item, const MenuFlyout& menu)
+{
+	// 用 ToolTip + TextBlock 而不是直接塞字串：字串版不會換行，這段長度會拉成很長的一條。
+	TextBlock tipText;
+	tipText.Text(_(L"Windows can only act as a Bluetooth speaker for one connection at a time, so disconnecting any device also drops the others. This is a Windows limitation, not a bug. When this is on, the dropped devices are reconnected automatically after a few seconds."));
+	tipText.TextWrapping(TextWrapping::Wrap);
+	tipText.MaxWidth(320);
+
+	ToolTip tip;
+	tip.Content(tipText);
+	tip.PlacementTarget(item);
+	tip.Placement(winrt::Windows::UI::Xaml::Controls::Primitives::PlacementMode::Right);
+
+	ToolTipService::SetToolTip(item, tip);
+	ToolTipService::SetPlacement(item, winrt::Windows::UI::Xaml::Controls::Primitives::PlacementMode::Right);
+
+	auto hovering = std::make_shared<bool>(false);
+
+	item.PointerEntered([hovering, tip](const auto&, const auto&) {
+		*hovering = true;
+		try
+		{
+			tip.IsOpen(true);
+		}
+		CATCH_LOG();
+		});
+	item.PointerExited([hovering, tip](const auto&, const auto&) {
+		*hovering = false;
+		try
+		{
+			tip.IsOpen(false);
+		}
+		CATCH_LOG();
+		});
+
+	// 萬一 service 的關閉計時器仍然搶先觸發，只要游標還在項目上就接回來。
+	// 由我們先開啟的情況下這條通常不會被走到，留著當保險。
+	tip.Closed([hovering](const auto& sender, const auto&) {
+		if (!*hovering)
+		{
+			return;
+		}
+		try
+		{
+			sender.as<ToolTip>().IsOpen(true);
+		}
+		CATCH_LOG();
+		});
+
+	// 游標還停在項目上就把選單關掉時 PointerExited 不一定會來。旗標留著是 true 會讓
+	// 下次的關閉被誤判成「還在 hover」而重新彈出來；提示本身也得跟著關掉，否則沒有人
+	// 會去關它，會孤零零地留在畫面上。XAML 事件可以掛多個處理常式，所以這裡自己掛自己
+	// 的，不必和 SetupMenu 那個混在一起。
+	menu.Closed([hovering, tip](const auto&, const auto&) {
+		*hovering = false;
+		try
+		{
+			tip.IsOpen(false);
+		}
+		CATCH_LOG();
+		});
+}
+
 void SetupMenu()
 {
 	// https://docs.microsoft.com/en-us/windows/uwp/design/style/segoe-ui-symbol-font
+	MenuFlyout menu;
+
 	FontIcon settingsIcon;
 	settingsIcon.Glyph(L"\xE713");
 
@@ -941,6 +1135,34 @@ void SetupMenu()
 		SaveSettings();
 		});
 
+	FontIcon autoReconnectCheckedIcon, autoReconnectUncheckedIcon;
+	autoReconnectCheckedIcon.Glyph(L"\xE73E");
+
+	// 斷開任何一台都會把系統唯一的 A2DP sink 關掉、其他裝置一起斷（平台限制）。
+	// 開著的話會自動把被連累的裝置接回來；關掉的話它們就會顯示「連線已被系統關閉」。
+	MenuFlyoutItem autoReconnectItem;
+	autoReconnectItem.Text(_(L"Reconnect devices dropped by another disconnect"));
+	if (g_autoReconnectOthers) {
+		autoReconnectItem.Icon(autoReconnectCheckedIcon);
+	}
+	else {
+		autoReconnectItem.Icon(autoReconnectUncheckedIcon);
+	}
+	autoReconnectItem.Click([autoReconnectCheckedIcon, autoReconnectUncheckedIcon](const auto& sender, const auto&) {
+		MenuFlyoutItem self = sender.as<MenuFlyoutItem>();
+		g_autoReconnectOthers = !g_autoReconnectOthers;
+		if (g_autoReconnectOthers) {
+			self.Icon(autoReconnectCheckedIcon);
+		}
+		else {
+			self.Icon(autoReconnectUncheckedIcon);
+		}
+		SaveSettings();
+		});
+
+	// 說明提示的整套行為獨立在這裡，要移除的話刪掉這一行就好。
+	AttachAutoReconnectTooltip(autoReconnectItem, menu);
+
 	FontIcon closeIcon;
 	closeIcon.Glyph(L"\xE8BB");
 
@@ -971,10 +1193,11 @@ void SetupMenu()
 		g_xamlFlyout.ShowAt(g_xamlCanvas);
 		});
 
-	MenuFlyout menu;
+
 	menu.Items().Append(settingsItem);
 	menu.Items().Append(startupItem);
 	menu.Items().Append(notificationItem);
+	menu.Items().Append(autoReconnectItem);
 	menu.Items().Append(exitItem);
 	menu.Opened([](const auto& sender, const auto&) {
 		auto menuItems = sender.as<MenuFlyout>().Items();
@@ -1174,17 +1397,52 @@ void SetStartupStatus(bool status)
 
 void ShowInitialToastNotification()
 {
+	ShowToastNotification(_(L"AudioPlaybackConnector"),
+		_(L"Application has started and is running in the notification area."), 5);
+}
+
+// 斷開任何一台裝置都會讓其他裝置跟著斷線（系統的 A2DP sink 只有一份），這對使用者
+// 來說完全無法預期。第一次真的發生時說明一次，之後靠設定裡的旗標永不再擾——
+// 說明擺在現象發生的當下最有效，事後藏在選單裡沒人會去看。
+void ShowCascadeExplanationToast()
+{
+	if (g_cascadeExplained)
+	{
+		return;
+	}
+	g_cascadeExplained = true;
+	SaveSettings();
+
+	// 每行都要短：ToastGeneric 的彈出視窗只給標題一行加兩行內文，寫長了會被截掉。
+	// 「已經幫你接回來了」標題就講完了，內文只留「為什麼」和「怎麼關掉」。
+	// 秒數給得比啟動通知長，這段字是要讀的，不是瞄一眼就好。
+	ShowToastNotification(_(L"Other devices have been reconnected"),
+		_(L"Windows drops all Bluetooth audio devices when one is disconnected."), 30,
+		_(L"You can turn this off from the tray menu."));
+}
+
+void ShowToastNotification(std::wstring_view titleText, std::wstring_view messageText, int expireSeconds, std::wstring_view extraText)
+{
 	try
 	{
-		std::wstring title = _(L"AudioPlaybackConnector");
-		std::wstring message = _(L"Application has started and is running in the notification area.");
+		std::wstring title(titleText);
+		std::wstring message(messageText);
 
 		std::wstring toastXmlString =
 			L"<toast activationType=\"protocol\" launch=\"audioplaybackconnector:show\">"
 			L"<visual>"
 			L"<binding template=\"ToastGeneric\">"
 			L"<text>" + title + L"</text>"
-			L"<text>" + message + L"</text>"
+			L"<text>" + message + L"</text>";
+
+		// ToastGeneric 最多三個 text（一個標題、兩行內文）。分成兩個元素而不是把字
+		// 串成一大段，比較不會整段被截掉。
+		if (!extraText.empty())
+		{
+			toastXmlString += L"<text>" + std::wstring(extraText) + L"</text>";
+		}
+
+		toastXmlString +=
 			L"</binding>"
 			L"</visual>"
 			L"</toast>";
@@ -1222,7 +1480,7 @@ void ShowInitialToastNotification()
 
 		ToastNotification toast(toastXml);
 
-		toast.ExpirationTime(winrt::Windows::Foundation::DateTime::clock::now() + std::chrono::seconds(5));
+		toast.ExpirationTime(winrt::Windows::Foundation::DateTime::clock::now() + std::chrono::seconds(expireSeconds));
 
 		notifier.Show(toast);
 	}

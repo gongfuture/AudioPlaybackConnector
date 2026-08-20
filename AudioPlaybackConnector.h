@@ -62,7 +62,17 @@ struct ConnectionEntry
 //
 // 自訂值設了 customer-defined bit (0x20000000)，系統 HRESULT 不會用這個位元，
 // 因此不可能和真正的錯誤碼相撞。
-constexpr HRESULT APC_S_CLOSED = S_OK;                              // 曾經連上，之後關閉或收到停止要求
+/**/
+// 曾經連上，之後正常結束（未細分原因）
+constexpr HRESULT APC_S_CLOSED = S_OK;
+// 曾經連上的 worker 是「為什麼」結束的。三種理由以前都回傳 APC_S_CLOSED，分不出來，
+// 於是「使用者按了斷線」和「連線被系統關掉」在父行程眼中一模一樣。這幾個是自訂的
+// 成功碼（severity 0 + customer bit），SUCCEEDED() 為真，不會被當成錯誤。
+/**/
+// 連線被對方或系統關閉
+constexpr HRESULT APC_S_REMOTE_CLOSED = static_cast<HRESULT>(0x20000001); 
+constexpr HRESULT APC_S_STOPPED = static_cast<HRESULT>(0x20000002);      // 父行程要求停止
+constexpr HRESULT APC_S_PARENT_GONE = static_cast<HRESULT>(0x20000003);  // 父行程不見了
 constexpr HRESULT APC_E_CREATE_FAILED = static_cast<HRESULT>(0xA0000001);     // TryCreateFromId 回傳 null
 constexpr HRESULT APC_E_REQUEST_TIMED_OUT = static_cast<HRESULT>(0xA0000002);
 constexpr HRESULT APC_E_DENIED_BY_SYSTEM = static_cast<HRESULT>(0xA0000003);
@@ -130,6 +140,32 @@ UINT WM_TASKBAR_CREATED = 0;
 bool g_reconnect = false;
 bool g_showNotification = true;
 std::vector<std::wstring> g_lastDevices;
+
+/* 系統的 A2DP sink 只有一份，拆掉任何一條連線就會把它整個關掉，其他裝置一起斷。
+*  這是平台限制，繞不過去（三種拆除方式都試過，見 RunWorkerProcess 的說明）。
+*  能做的只有事後補救：使用者主動斷開某台之後，若其他「原本連著」的裝置在短時間內
+*  被連帶關掉，就自動把它們接回來。使用者感受到的是那幾台中斷幾秒後自己恢復。 */
+bool g_autoReconnectOthers = true;
+// 連帶斷線的說明只跳一次，之後永久記住已經說過了。
+bool g_cascadeExplained = false;
+
+/* 使用者主動斷線的當下，把「當時確實連著的其他裝置」逐一登記成連帶斷線候選，
+*  記上各自的到期時間。之後只有登記過而且還沒過期的裝置被 APC_S_REMOTE_CLOSED
+*  斷掉時才自動接回，且取用後立即移除（一次性），所以接不上也不會無限重試。
+*
+*  用「逐台登記」而不是單一時間戳，是為了避開一個誤判：使用者斷開 A 之後、時間窗
+*  還沒過就手動接上 C，這時 C 若因為走遠而斷線，單一時間戳會把它誤認成被連累的而
+*  自動接回。逐台登記則不會，因為 C 在 A 被斷的那一刻根本還沒連上。
+*  這個做法參考自 N0ahTM/AudioPlaybackConnector2（MIT），該專案獨立遇到並解決了
+*  同一個平台限制。 */
+std::unordered_map<std::wstring, uint64_t> g_cascadeCandidates; // deviceId -> 到期時刻
+// 他們用 5 秒；這裡放寬到 10 秒。逐台登記加上一次性取用之後，窗開長一點不會有誤判
+// 成本，而先前量到服務端回收最長要 5 秒，5 秒的窗會太邊緣。
+constexpr uint64_t CASCADE_WINDOW_MS = 10000;
+// 等 sink 拆乾淨再重連，太快接上去會直接失敗。這個值同樣取自上述專案的實測值。
+constexpr UINT_PTR TIMER_AUTORECONNECT = 1;
+constexpr UINT AUTORECONNECT_DELAY_MS = 2500;
+std::vector<std::wstring> g_pendingAutoReconnect;
 
 #include "Util.hpp"
 #include "FnvHash.hpp"

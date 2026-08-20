@@ -7,6 +7,8 @@ void DefaultSettings()
 {
 	g_reconnect = false;
 	g_showNotification = true;
+	g_autoReconnectOthers = true;
+	g_cascadeExplained = false;
 	g_lastDevices.clear();
 }
 
@@ -38,6 +40,12 @@ void LoadSettings()
 		if (jsonObj.HasKey(L"showNotification"))
 			g_showNotification = jsonObj.Lookup(L"showNotification").GetBoolean();
 
+		if (jsonObj.HasKey(L"autoReconnectOthers"))
+			g_autoReconnectOthers = jsonObj.Lookup(L"autoReconnectOthers").GetBoolean();
+
+		if (jsonObj.HasKey(L"cascadeExplained"))
+			g_cascadeExplained = jsonObj.Lookup(L"cascadeExplained").GetBoolean();
+
 		auto lastDevices = jsonObj.Lookup(L"lastDevices").GetArray();
 		g_lastDevices.reserve(lastDevices.Size());
 		for (const auto& i : lastDevices)
@@ -56,6 +64,8 @@ void SaveSettings()
 		JsonObject jsonObj;
 		jsonObj.Insert(L"reconnect", JsonValue::CreateBooleanValue(g_reconnect));
 		jsonObj.Insert(L"showNotification", JsonValue::CreateBooleanValue(g_showNotification));
+		jsonObj.Insert(L"autoReconnectOthers", JsonValue::CreateBooleanValue(g_autoReconnectOthers));
+		jsonObj.Insert(L"cascadeExplained", JsonValue::CreateBooleanValue(g_cascadeExplained));
 
 		JsonArray lastDevices;
 		for (const auto& i : g_audioPlaybackConnections)
