@@ -106,7 +106,7 @@ jobs:
         path: Release/ARM64/AudioPlaybackConnectorARM64.exe
 
     - name: Release
-      uses: softprops/action-gh-release@v2
+      uses: softprops/action-gh-release@v3
       if: github.ref_type == 'tag'
       with:
         files: |
@@ -115,6 +115,6 @@ jobs:
           Release/ARM/AudioPlaybackConnectorARM.exe
           Release/ARM64/AudioPlaybackConnectorARM64.exe
         tag_name: ${{ github.ref }}
-        release_name: ${{ github.ref }}
+        name: ${{ github.ref }}
         draft: true
         prerelease: false
