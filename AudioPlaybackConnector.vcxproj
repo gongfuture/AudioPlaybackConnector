@@ -375,6 +375,7 @@
     <Image Include="AudioPlaybackConnector.ico" />
   </ItemGroup>
   <ItemGroup>
+    <None Include="AudioPlaybackConnector.svg" />
     <None Include="Directory.Build.props" />
     <None Include="packages.config" />
   </ItemGroup>

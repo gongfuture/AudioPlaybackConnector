@@ -61,6 +61,7 @@
   <ItemGroup>
     <None Include="packages.config" />
     <None Include="Directory.Build.props" />
+    <None Include="AudioPlaybackConnector.svg" />
   </ItemGroup>
   <ItemGroup>
     <Manifest Include="AudioPlaybackConnector.manifest">
