@@ -115,6 +115,6 @@ jobs:
           Release/ARM/AudioPlaybackConnectorARM.exe
           Release/ARM64/AudioPlaybackConnectorARM64.exe
         tag_name: ${{ github.ref }}
-        name: ${{ github.ref }}
+        name: ${{ github.ref_name }}
         draft: true
         prerelease: false
