@@ -70,12 +70,18 @@ constexpr HRESULT APC_S_CLOSED = S_OK;
 // 成功碼（severity 0 + customer bit），SUCCEEDED() 為真，不會被當成錯誤。
 /**/
 // 連線被對方或系統關閉
-constexpr HRESULT APC_S_REMOTE_CLOSED = static_cast<HRESULT>(0x20000001); 
+constexpr HRESULT APC_S_REMOTE_CLOSED = static_cast<HRESULT>(0x20000001);
 constexpr HRESULT APC_S_STOPPED = static_cast<HRESULT>(0x20000002);      // 父行程要求停止
 constexpr HRESULT APC_S_PARENT_GONE = static_cast<HRESULT>(0x20000003);  // 父行程不見了
 constexpr HRESULT APC_E_CREATE_FAILED = static_cast<HRESULT>(0xA0000001);     // TryCreateFromId 回傳 null
 constexpr HRESULT APC_E_REQUEST_TIMED_OUT = static_cast<HRESULT>(0xA0000002);
 constexpr HRESULT APC_E_DENIED_BY_SYSTEM = static_cast<HRESULT>(0xA0000003);
+// 藍牙被系統中斷（無線電開關、睡眠喚醒、裝置走遠後系統回收傳輸）之後，OpenAsync 可能
+// 回報 Success，但 A2DP SNK 音訊端點沒有跟著激活（裝置管理員裡停留在「未插入」）。
+// 使用者的感受就是「連上了卻沒有聲音」。worker 在開啟成功後驗證端點，驗證不過就帶這個
+// 碼退出，讓上層走重試與明確的錯誤提示，而不是呈現一條假的連線。
+// 見 docs/research/2026-09-12-bt-interrupt-no-sound.md。
+constexpr HRESULT APC_E_ENDPOINT_NOT_ACTIVE = static_cast<HRESULT>(0xA0000004);
 
 // RegisterWaitForSingleObject 取得的 handle 不是用 CloseHandle 釋放的，wil 也只包了
 // 新版 threadpool 的 PTP_WAIT，所以這裡自己補一個。UnregisterWaitEx 一定要傳
@@ -122,6 +128,7 @@ struct WorkerEventPayload
 };
 
 std::unordered_map<std::wstring, ConnectionEntry> g_audioPlaybackConnections;
+std::unordered_map<std::wstring, int> g_connectAttempts; // deviceId -> 連續暫時性失敗次數
 std::unordered_map<uint64_t, std::unique_ptr<WorkerContext>> g_workers;
 uint64_t g_nextConnectToken = 1;
 HANDLE g_hJob = nullptr; // KILL_ON_JOB_CLOSE：父行程一消失，worker 一律跟著死
