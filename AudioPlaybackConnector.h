@@ -3,6 +3,7 @@
 #include "resource.h"
 
 using namespace winrt::Windows::Data::Json;
+using namespace winrt::Windows::Devices::Bluetooth;
 using namespace winrt::Windows::Devices::Enumeration;
 using namespace winrt::Windows::Foundation;
 using namespace winrt::Windows::Media::Audio;
@@ -22,6 +23,7 @@ constexpr UINT WM_DISCONNECTDEVICE = WM_APP + 4;
 constexpr UINT WM_WORKERCONNECTED = WM_APP + 5;
 constexpr UINT WM_WORKEREXITED = WM_APP + 6;
 constexpr UINT WM_CLEARSTALESTATUS = WM_APP + 7;
+constexpr UINT WM_PROXIMITYCHANGED = WM_APP + 8;
 
 HANDLE g_hMutex = nullptr;
 HINSTANCE g_hInst;
@@ -166,6 +168,23 @@ constexpr uint64_t CASCADE_WINDOW_MS = 10000;
 constexpr UINT_PTR TIMER_AUTORECONNECT = 1;
 constexpr UINT AUTORECONNECT_DELAY_MS = 2500;
 std::vector<std::wstring> g_pendingAutoReconnect;
+
+/* 設備靠近自動重連（參考 Windows 動態鎖的思路）。Classic Bluetooth 的 RSSI 沒有
+*  開放的桌面 API（查詢式 inquiry 要阻塞 5-10 秒且吃電，內核 IOCTL 需要管理員），
+*  LE 的 RawSignalStrengthInDBm 只有廣播監視器能拿到而手機平時不廣播，所以「距離
+*  探測 + 滯回」這條路在純原生約束下走不通；能做的是鏈路級替代：監視
+*  BluetoothDevice 的 IsConnected。設備走遠系統自己會斷鏈路，本選項補的是
+*  「回來（IsConnected 翻 true）就自動把會話接回去」。
+*  細節與取捨見 docs/design/2026-09-12-approach-reconnect.md。 */
+bool g_autoReconnectOnApproach = false;
+DeviceWatcher g_proximityWatcher{ nullptr };
+winrt::event_token g_proximityUpdatedToken{};
+// AEP 的 IsConnected 屬性。回調在線程池上，只打包 PostMessage，不碰別的狀態。
+struct ProximityPayload
+{
+	std::wstring aepId;
+	bool connected = false;
+};
 
 #include "Util.hpp"
 #include "FnvHash.hpp"

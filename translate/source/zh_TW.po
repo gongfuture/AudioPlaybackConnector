@@ -63,6 +63,9 @@ msgid "Reconnecting"
 msgstr "重新連線中"
 
 #: AudioPlaybackConnector.cpp:322
+msgid "Reconnect devices when they come back in range"
+msgstr "裝置回到範圍內時自動重連"
+
 msgid "Reconnect devices dropped by another disconnect"
 msgstr "自動接回被連帶中斷的裝置"
 

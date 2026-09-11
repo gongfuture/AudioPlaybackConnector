@@ -10,6 +10,7 @@ void ConnectDevice(const DeviceInformation& device);
 winrt::fire_and_forget ConnectDeviceById(std::wstring deviceId);
 winrt::fire_and_forget ClearStaleDisplayStatusAsync();
 void SetupDevicePicker();
+void SetupProximityWatcher();
 void SetupSvgIcon();
 void UpdateNotifyIcon();
 bool GetStartupStatus();
@@ -571,6 +572,7 @@ int APIENTRY wWinMain(_In_ HINSTANCE hInstance,
 	SetupFlyout();
 	SetupMenu();
 	SetupDevicePicker();
+	SetupProximityWatcher();
 	SetupSvgIcon();
 
 	g_nid.hWnd = g_niid.hWnd = g_hWnd;
@@ -939,6 +941,50 @@ LRESULT CALLBACK WndProc(HWND hWnd, UINT message, WPARAM wParam, LPARAM lParam)
 			}
 		}
 		break;
+	case WM_PROXIMITYCHANGED:
+	{
+		/* 設備鏈路回來了：若啟用了「靠近自動重連」、這台是程式認得的設備
+		*  （lastDevices 裡有它的 MAC）、目前沒有會話也沒排在隊列裡，就把它
+		*  排進 AUTORECONNECT 計時器。用 AEP 的 MAC 尾巴對回 lastDevices 的
+		*  BTHENUM 介面 id（AudioPlaybackConnection 只認後者）。 */
+		auto payload = std::unique_ptr<ProximityPayload>(reinterpret_cast<ProximityPayload*>(wParam));
+		if (!g_autoReconnectOnApproach || !payload->connected)
+			break;
+
+		auto aepId = std::move(payload->aepId);
+		const auto dash = aepId.find_last_of(L'-');
+		if (dash == std::wstring::npos || aepId.size() - dash - 1 != 17)
+			break; // AEP id 以 -xx:xx:xx:xx:xx:xx 結尾
+		std::wstring mac = aepId.substr(dash + 1);
+		mac.erase(std::remove(mac.begin(), mac.end(), L':'), mac.end());
+		std::transform(mac.begin(), mac.end(), mac.begin(), towlower);
+
+		std::wstring deviceId;
+		for (const auto& stored : g_lastDevices)
+		{
+			const auto sep = stored.find(L"_C00000000");
+			if (sep == std::wstring::npos || sep < 12)
+				continue;
+			std::wstring storedMac = stored.substr(sep - 12, 12);
+			std::transform(storedMac.begin(), storedMac.end(), storedMac.begin(), towlower);
+			if (storedMac == mac)
+			{
+				deviceId = stored;
+				break;
+			}
+		}
+		if (deviceId.empty())
+			break;
+
+		const std::wstring key = deviceId;
+		if (g_audioPlaybackConnections.find(key) != g_audioPlaybackConnections.end())
+			break;
+		if (std::find(g_pendingAutoReconnect.begin(), g_pendingAutoReconnect.end(), key) != g_pendingAutoReconnect.end())
+			break;
+		g_pendingAutoReconnect.push_back(key);
+		SetTimer(hWnd, TIMER_AUTORECONNECT, AUTORECONNECT_DELAY_MS, nullptr);
+	}
+	break;
 	case WM_CONNECTDEVICE:
 		if (g_reconnect)
 		{
@@ -1160,6 +1206,29 @@ void SetupMenu()
 		SaveSettings();
 		});
 
+	FontIcon approachCheckedIcon, approachUncheckedIcon;
+	approachCheckedIcon.Glyph(L"ç3E");
+
+	MenuFlyoutItem approachItem;
+	approachItem.Text(_(L"Reconnect devices when they come back in range"));
+	if (g_autoReconnectOnApproach) {
+		approachItem.Icon(approachCheckedIcon);
+	}
+	else {
+		approachItem.Icon(approachUncheckedIcon);
+	}
+	approachItem.Click([approachCheckedIcon, approachUncheckedIcon](const auto& sender, const auto&) {
+		MenuFlyoutItem self = sender.as<MenuFlyoutItem>();
+		g_autoReconnectOnApproach = !g_autoReconnectOnApproach;
+		if (g_autoReconnectOnApproach) {
+			self.Icon(approachCheckedIcon);
+		}
+		else {
+			self.Icon(approachUncheckedIcon);
+		}
+		SaveSettings();
+		});
+
 	// 說明提示的整套行為獨立在這裡，要移除的話刪掉這一行就好。
 	AttachAutoReconnectTooltip(autoReconnectItem, menu);
 
@@ -1198,6 +1267,7 @@ void SetupMenu()
 	menu.Items().Append(startupItem);
 	menu.Items().Append(notificationItem);
 	menu.Items().Append(autoReconnectItem);
+	menu.Items().Append(approachItem);
 	menu.Items().Append(exitItem);
 	menu.Opened([](const auto& sender, const auto&) {
 		auto menuItems = sender.as<MenuFlyout>().Items();
@@ -1290,6 +1360,36 @@ winrt::fire_and_forget ConnectDeviceById(std::wstring deviceId)
 	}
 }
 
+
+/* 「設備靠近自動重連」的監視器。BluetoothDevice::GetDeviceSelector() 是系統的
+*  官方選擇器（桌面行程可枚舉，實測可用；手寫的 ProtocolId 過濾器反而拿不到結果）。
+*  這裡只把事件打包丟回 UI 執行緒，所有狀態判斷都在 WM_PROXIMITYCHANGED 裡做。 */
+void SetupProximityWatcher()
+{
+	try
+	{
+		auto properties = winrt::single_threaded_vector<winrt::hstring>();
+		properties.Append(L"System.Devices.Aep.IsConnected");
+
+		g_proximityWatcher = DeviceInformation::CreateWatcher(BluetoothDevice::GetDeviceSelector(), properties);
+		g_proximityUpdatedToken = g_proximityWatcher.Updated([](const DeviceWatcher&, const DeviceInformationUpdate& update) {
+			bool connected = false;
+			if (auto v = update.Properties().TryLookup(L"System.Devices.Aep.IsConnected"))
+				connected = winrt::unbox_value_or<bool>(v, false);
+			if (!connected)
+				return; // 走遠時系統自己斷鏈路，這裡沒有事可做
+			auto payload = std::make_unique<ProximityPayload>();
+			payload->aepId = std::wstring(update.Id());
+			payload->connected = true;
+			PostPayload(WM_PROXIMITYCHANGED, std::move(payload));
+		});
+		g_proximityWatcher.Start();
+	}
+	catch (winrt::hresult_error const&)
+	{
+		LOG_CAUGHT_EXCEPTION(); // 監視器起不來只影響這個可選功能
+	}
+}
 
 void SetupDevicePicker()
 {
