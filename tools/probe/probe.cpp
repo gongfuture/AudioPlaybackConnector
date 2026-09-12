@@ -1,6 +1,6 @@
 // Probe tool: print Bluetooth radios, AudioPlaybackConnection devices and audio
 // endpoints, for researching the "reconnect after system interrupt produces no
-// sound" issue. Build with _build_local.cmd (uses the main project's generated
+// sound" issue. Build with build.cmd (uses the main project's generated
 // cppwinrt headers).
 #include <windows.h>
 #include <mmdeviceapi.h>
@@ -112,6 +112,12 @@ int wmain(int argc, wchar_t** argv)
 	if (argc >= 3 && wcscmp(argv[1], L"--bt") == 0)
 	{
 		bool on = wcscmp(argv[2], L"on") == 0;
+		if (!on && wcscmp(argv[2], L"off") != 0)
+		{
+			wprintf(L"usage: probe.exe --bt on|off
+");
+			return 1;
+		}
 		try
 		{
 			auto radios = wr::Radio::GetRadiosAsync().get();

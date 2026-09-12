@@ -22,6 +22,7 @@ constexpr UINT WM_DISCONNECTDEVICE = WM_APP + 4;
 constexpr UINT WM_WORKERCONNECTED = WM_APP + 5;
 constexpr UINT WM_WORKEREXITED = WM_APP + 6;
 constexpr UINT WM_CLEARSTALESTATUS = WM_APP + 7;
+constexpr UINT WM_CONNECTFAILED = WM_APP + 8;
 
 HANDLE g_hMutex = nullptr;
 HINSTANCE g_hInst;
@@ -172,7 +173,18 @@ constexpr uint64_t CASCADE_WINDOW_MS = 10000;
 // 等 sink 拆乾淨再重連，太快接上去會直接失敗。這個值同樣取自上述專案的實測值。
 constexpr UINT_PTR TIMER_AUTORECONNECT = 1;
 constexpr UINT AUTORECONNECT_DELAY_MS = 2500;
-std::vector<std::wstring> g_pendingAutoReconnect;
+// 待重连队列：带 DeviceInformation，解析失败时 UI 才能给出可重试的错误显示
+struct PendingReconnect
+{
+	std::wstring deviceId;
+	DeviceInformation device{ nullptr };
+};
+struct ConnectFailedPayload
+{
+	DeviceInformation device{ nullptr };
+	HRESULT hr = E_FAIL;
+};
+std::vector<PendingReconnect> g_pendingAutoReconnect;
 
 #include "Util.hpp"
 #include "FnvHash.hpp"

@@ -7,7 +7,7 @@ void SetupFlyout();
 void SetupMenu();
 void AttachAutoReconnectTooltip(const MenuFlyoutItem& item, const MenuFlyout& menu);
 void ConnectDevice(const DeviceInformation& device);
-winrt::fire_and_forget ConnectDeviceById(std::wstring deviceId);
+winrt::fire_and_forget ConnectDeviceById(std::wstring deviceId, DeviceInformation knownDevice = { nullptr });
 winrt::fire_and_forget ClearStaleDisplayStatusAsync();
 void SetupDevicePicker();
 void SetupSvgIcon();
@@ -70,6 +70,14 @@ size_t CountConnected()
 		}
 	}
 	return count;
+}
+
+// 日志里 HRESULT/错误码一律十六进制，方便与文档/调试器对照
+static std::wstring Hex32(unsigned long v)
+{
+	wchar_t buf[16]{};
+	swprintf_s(buf, L"0x%08X", static_cast<unsigned int>(v));
+	return buf;
 }
 
 bool TryGetArgValue(PCWSTR name, std::wstring& value)
@@ -138,7 +146,7 @@ bool WaitForA2dpEndpointActive(const std::wstring& deviceMac, DWORD timeoutMs)
 		catch (winrt::hresult_error const&)
 		{
 			LOG_CAUGHT_EXCEPTION();
-			return true; // 列舉失敗：放行
+			return false; // 列舉失敗：視為未激活，走報錯+重試
 		}
 
 		if (GetTickCount64() >= deadline)
@@ -199,7 +207,7 @@ int RunWorkerProcess(std::wstring_view deviceId, std::wstring_view stopEventName
 		const auto openStart = GetTickCount64();
 		const auto openResult = connection.OpenAsync().get();
 		DebugLog(L"worker: OpenAsync status=" + std::to_wstring(static_cast<int>(openResult.Status())) +
-			L" extended=0x" + std::to_wstring(static_cast<uint32_t>(openResult.ExtendedError())) +
+			L" extended=" + Hex32(static_cast<uint32_t>(openResult.ExtendedError())) +
 			L" in " + std::to_wstring(GetTickCount64() - openStart) + L" ms");
 		bool opened = false;
 		switch (openResult.Status())
@@ -951,7 +959,7 @@ LRESULT CALLBACK WndProc(HWND hWnd, UINT message, WPARAM wParam, LPARAM lParam)
 			*  有機會直接過；端點楔死時重試救不了，但兩次之後會停下來顯示可重試的
 			*  錯誤，不會無限循環。 */
 			DebugLog(L"WM_WORKEREXITED: state=" + std::to_wstring(static_cast<int>(state)) +
-			L" exit=0x" + std::to_wstring(exitCode));
+			L" exit=" + Hex32(exitCode));
 		const bool retriable = exitCode == 0xC0000005 ||
 				static_cast<HRESULT>(exitCode) == APC_E_ENDPOINT_NOT_ACTIVE;
 			// 上面已經把 g_audioPlaybackConnections 的項目 erase 掉了（it 已失效），
@@ -960,7 +968,7 @@ LRESULT CALLBACK WndProc(HWND hWnd, UINT message, WPARAM wParam, LPARAM lParam)
 			if (retriable && attempts < 2)
 			{
 				++attempts;
-				g_pendingAutoReconnect.push_back(deviceId);
+				g_pendingAutoReconnect.push_back({ deviceId, device });
 				// 端點激活（或系統收拾上一條連線）需要時間，實測 2.5s 的立即重試
 				// 大概率還在楔住窗口裡，拉長到 10s 再試。
 				SetTimer(hWnd, TIMER_AUTORECONNECT,
@@ -992,7 +1000,7 @@ LRESULT CALLBACK WndProc(HWND hWnd, UINT message, WPARAM wParam, LPARAM lParam)
 			{
 				// 被剛才那次主動斷線連累的。使用者沒有要斷這台，所以接回來。
 				// 不能馬上接：sink 還在拆，太早連上去會直接失敗，所以排進計時器。
-				g_pendingAutoReconnect.push_back(deviceId);
+				g_pendingAutoReconnect.push_back({ deviceId, device });
 				SetTimer(hWnd, TIMER_AUTORECONNECT, AUTORECONNECT_DELAY_MS, nullptr);
 				SetDisplayStatusSafe(device, _(L"Reconnecting"), DevicePickerDisplayStatusOptions::ShowProgress);
 				ShowCascadeExplanationToast();
@@ -1017,6 +1025,12 @@ LRESULT CALLBACK WndProc(HWND hWnd, UINT message, WPARAM wParam, LPARAM lParam)
 		UpdateNotifyIcon();
 	}
 	break;
+	case WM_CONNECTFAILED:
+	{
+		auto payload = std::unique_ptr<ConnectFailedPayload>(reinterpret_cast<ConnectFailedPayload*>(wParam));
+		SetDisplayStatusSafe(payload->device, FormatWorkerError(static_cast<DWORD>(payload->hr)), DevicePickerDisplayStatusOptions::ShowRetryButton);
+	}
+	break;
 	case WM_CLEARSTALESTATUS:
 	{
 		auto payload = std::unique_ptr<DevicePayload>(reinterpret_cast<DevicePayload*>(wParam));
@@ -1035,12 +1049,12 @@ LRESULT CALLBACK WndProc(HWND hWnd, UINT message, WPARAM wParam, LPARAM lParam)
 			// g_pendingAutoReconnect 裡塞新的東西，不能邊走邊改。
 			auto pending = std::move(g_pendingAutoReconnect);
 			g_pendingAutoReconnect.clear();
-			for (const auto& deviceId : pending)
+			for (const auto& pendingItem : pending)
 			{
 				// 這段期間使用者可能已經自己把它接回來了，那就別插手。
-				if (g_audioPlaybackConnections.find(deviceId) == g_audioPlaybackConnections.end())
+				if (g_audioPlaybackConnections.find(pendingItem.deviceId) == g_audioPlaybackConnections.end())
 				{
-					ConnectDeviceById(deviceId);
+					ConnectDeviceById(pendingItem.deviceId, pendingItem.device);
 				}
 			}
 		}
@@ -1387,7 +1401,7 @@ winrt::fire_and_forget ClearStaleDisplayStatusAsync()
 }
 
 // 開機重連只用得到 deviceId，解析成 DeviceInformation 之後丟回 UI 執行緒走一般流程。
-winrt::fire_and_forget ConnectDeviceById(std::wstring deviceId)
+winrt::fire_and_forget ConnectDeviceById(std::wstring deviceId, DeviceInformation knownDevice)
 {
 	try
 	{
@@ -1397,7 +1411,11 @@ winrt::fire_and_forget ConnectDeviceById(std::wstring deviceId)
 	}
 	catch (winrt::hresult_error const& e)
 	{
-		DebugLog(L"ConnectDeviceById: FAILED 0x" + std::to_wstring(static_cast<uint32_t>(e.code().value)));
+		DebugLog(L"ConnectDeviceById: FAILED " + Hex32(static_cast<uint32_t>(e.code().value)));
+		// 解析失敗也要讓 UI 收場：重試路徑上 picker 已被設成「連接中」，
+		// 不上報的話會永遠卡在那裡（CodeRabbit 意見，實測踩過）。
+		if (knownDevice)
+			PostPayload(WM_CONNECTFAILED, std::make_unique<ConnectFailedPayload>(ConnectFailedPayload{ knownDevice, e.code().value }));
 		LOG_CAUGHT_EXCEPTION();
 	}
 }

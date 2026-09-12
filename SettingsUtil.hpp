@@ -57,8 +57,6 @@ void LoadSettings()
 
 		std::wstring utf16 = Utf8ToUtf16(string);
 		auto jsonObj = JsonObject::Parse(utf16);
-		DebugLog(L"LoadSettings: parsed ok, reconnect=" + std::wstring(jsonObj.Lookup(L"reconnect").GetBoolean() ? L"true" : L"false") +
-		L" lastDevices=" + std::to_wstring(g_lastDevices.size()));
 	g_reconnect = jsonObj.Lookup(L"reconnect").GetBoolean();
 
 		if (jsonObj.HasKey(L"showNotification"))
@@ -77,6 +75,8 @@ void LoadSettings()
 			if (i.ValueType() == JsonValueType::String)
 				g_lastDevices.push_back(std::wstring(i.GetString()));
 		}
+		DebugLog(L"LoadSettings: parsed ok, reconnect=" + std::wstring(g_reconnect ? L"true" : L"false") +
+			L" lastDevices=" + std::to_wstring(g_lastDevices.size()));
 	}
 	catch (winrt::hresult_error const& e)
 	{
