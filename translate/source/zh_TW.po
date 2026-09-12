@@ -116,6 +116,9 @@ msgid "Show startup notification"
 msgstr "顯示啟動通知"
 
 #: AudioPlaybackConnector.cpp:1144
+msgid "Reconnect devices when they come back in range"
+msgstr "裝置回到範圍內時自動重連"
+
 msgid "Reconnect devices dropped by another disconnect"
 msgstr "自動重連被系統斷線的裝置"
 

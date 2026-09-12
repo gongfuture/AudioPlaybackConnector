@@ -30,6 +30,7 @@ void DefaultSettings()
 	g_reconnect = false;
 	g_showNotification = true;
 	g_autoReconnectOthers = true;
+	g_autoReconnectOnApproach = false;
 	g_cascadeExplained = false;
 	g_lastDevices.clear();
 }
@@ -65,6 +66,9 @@ void LoadSettings()
 		if (jsonObj.HasKey(L"autoReconnectOthers"))
 			g_autoReconnectOthers = jsonObj.Lookup(L"autoReconnectOthers").GetBoolean();
 
+		if (jsonObj.HasKey(L"autoReconnectOnApproach"))
+			g_autoReconnectOnApproach = jsonObj.Lookup(L"autoReconnectOnApproach").GetBoolean();
+
 		if (jsonObj.HasKey(L"cascadeExplained"))
 			g_cascadeExplained = jsonObj.Lookup(L"cascadeExplained").GetBoolean();
 
@@ -98,6 +102,7 @@ void SaveSettings()
 		jsonObj.Insert(L"reconnect", JsonValue::CreateBooleanValue(g_reconnect));
 		jsonObj.Insert(L"showNotification", JsonValue::CreateBooleanValue(g_showNotification));
 		jsonObj.Insert(L"autoReconnectOthers", JsonValue::CreateBooleanValue(g_autoReconnectOthers));
+		jsonObj.Insert(L"autoReconnectOnApproach", JsonValue::CreateBooleanValue(g_autoReconnectOnApproach));
 		jsonObj.Insert(L"cascadeExplained", JsonValue::CreateBooleanValue(g_cascadeExplained));
 
 		JsonArray lastDevices;

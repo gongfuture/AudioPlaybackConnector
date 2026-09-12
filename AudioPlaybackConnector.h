@@ -3,6 +3,7 @@
 #include "resource.h"
 
 using namespace winrt::Windows::Data::Json;
+using namespace winrt::Windows::Devices::Bluetooth;
 using namespace winrt::Windows::Devices::Enumeration;
 using namespace winrt::Windows::Foundation;
 using namespace winrt::Windows::Media::Audio;
@@ -23,7 +24,8 @@ constexpr UINT WM_WORKERCONNECTED = WM_APP + 5;
 constexpr UINT WM_WORKEREXITED = WM_APP + 6;
 constexpr UINT WM_CLEARSTALESTATUS = WM_APP + 7;
 constexpr UINT WM_SHOWPICKER = WM_APP + 8; // 外部要求叫出裝置清單（--show 中繼過來的）
-constexpr UINT WM_CONNECTFAILED = WM_APP + 9; // 裝置 id 解析失敗（重試路徑）上報 UI
+constexpr UINT WM_PROXIMITYCHANGED = WM_APP + 9; // 設備靠近（IsConnected 翻轉）觸發重連
+constexpr UINT WM_CONNECTFAILED = WM_APP + 10; // 裝置 id 解析失敗（重試路徑）上報 UI
 
 // 通知被點擊時要做什麼。不是每則通知都該有動作：純粹告知結果的通知（例如連帶斷線
 // 說明）點下去跳出裝置清單並不合理，那和它講的事情無關。
@@ -199,6 +201,24 @@ struct ConnectFailedPayload
 	HRESULT hr = E_FAIL;
 };
 std::vector<PendingReconnect> g_pendingAutoReconnect;
+
+/* 設備靠近自動重連（參考 Windows 動態鎖的思路）。Classic Bluetooth 的 RSSI 沒有
+*  開放的桌面 API（查詢式 inquiry 要阻塞 5-10 秒且吃電，內核 IOCTL 需要管理員），
+*  LE 的 RawSignalStrengthInDBm 只有廣播監視器能拿到而手機平時不廣播，所以「距離
+*  探測 + 滯回」這條路在純原生約束下走不通；能做的是鏈路級替代：監視
+*  BluetoothDevice 的 IsConnected。設備走遠系統自己會斷鏈路，本選項補的是
+*  「回來（IsConnected 翻 true）就自動把會話接回去」。
+*  細節與取捨見 docs/design/2026-09-12-approach-reconnect.md。 */
+bool g_autoReconnectOnApproach = false;
+DeviceWatcher g_proximityWatcher{ nullptr };
+winrt::event_token g_proximityUpdatedToken{};
+winrt::event_token g_proximityAddedToken{};
+// AEP 的 IsConnected 屬性。回調在線程池上，只打包 PostMessage，不碰別的狀態。
+struct ProximityPayload
+{
+	std::wstring aepId;
+	bool connected = false;
+};
 
 #include "Util.hpp"
 #include "FnvHash.hpp"
