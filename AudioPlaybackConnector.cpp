@@ -1135,7 +1135,16 @@ LRESULT CALLBACK WndProc(HWND hWnd, UINT message, WPARAM wParam, LPARAM lParam)
 		const std::wstring key = deviceId;
 		if (g_audioPlaybackConnections.find(key) != g_audioPlaybackConnections.end())
 			break;
-		if (std::find(g_pendingAutoReconnect.begin(), g_pendingAutoReconnect.end(), key) != g_pendingAutoReconnect.end())
+		bool alreadyQueued = false;
+		for (const auto& item : g_pendingAutoReconnect)
+		{
+			if (item.deviceId == key)
+			{
+				alreadyQueued = true;
+				break;
+			}
+		}
+		if (alreadyQueued)
 			break;
 		g_pendingAutoReconnect.push_back({ key, nullptr });
 		SetTimer(hWnd, TIMER_AUTORECONNECT, AUTORECONNECT_DELAY_MS, nullptr);
