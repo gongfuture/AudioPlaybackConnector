@@ -29,3 +29,27 @@ Windows 側媒體鍵通過藍牙傳遞到手機控制播放；同時把手機回
 - 按約束（純原生、不引入額外內容），**兩個方向都不可實現**，故不做。
 - 若未來 Windows 開放 sink 側 AVRCP 會話（或專案接受 helper 進程方案），
   本文件的評估可作為起點。
+
+## 補充：耳機/車機是怎麼做到的（2026-09-12）
+
+藍牙耳機和車機的做法就是標準 AVRCP CT/TG 模型：耳機/車機是 A2DP Sink +
+**AVRCP Controller**，手機是 Source + Target。耳機上的按鍵由 CT 向手機發
+passthrough 命令；曲目信息由手機（TG）通過 AVRCP 1.3+ 的元數據通知**主動推送**
+給 CT。手機側原生支持，無需任何應用。
+
+本程式下的 PC 角色與耳機完全一致（A2DP Sink + CT），數據也已經到達
+Windows 藍牙棧——BthAvctpSvc.dll（AVCTP 服務）接收 AVRCP 元數據與命令通道。
+但掃描該組件證實：其中沒有任何 SMTC / 對外接口字符串，元數據在棧內終止，
+Windows 沒有把它交給應用的途徑。耳機/車機廠商是「整個棧自己實現」（車機
+尤其如此）或使用棧廠商提供的 CT API，而 Windows 的 CT 對應用關閉。
+
+## 可行的控制路徑（若接受 BLE HID 形態）
+
+「控制手機」唯一無安裝可行的路：PC 用 GattServiceProvider 模擬 BLE HID
+**Consumer Control** 設備（0x1812，Report Map 只含 Play/Pause/Next/Prev 等
+消費控制碼，Appearance 用 Generic Remote 0x0180）——這不是「鍵盤」的形態，
+而是市面上藍牙遙控器的標準品類。手機配對一次後，HID 報告裡的媒體鍵由
+Android 原生路由給當前媒體會話（後台也生效）。截獲 Windows 媒體鍵用
+WM_APPCOMMAND 全局鉤子，寫進 HID report 即可。
+
+「顯示手機曲目」方向（手機 → PC）仍然沒有任何通道：AVRCP 元數據不出棧。
