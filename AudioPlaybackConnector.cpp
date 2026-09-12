@@ -10,12 +10,15 @@ void ConnectDevice(const DeviceInformation& device);
 winrt::fire_and_forget ConnectDeviceById(std::wstring deviceId);
 winrt::fire_and_forget ClearStaleDisplayStatusAsync();
 void SetupDevicePicker();
+void ShowDevicePicker(HWND hWnd);
 void SetupSvgIcon();
+void EnsureProtocolRegistered();
+bool HasArg(PCWSTR name);
 void UpdateNotifyIcon();
 bool GetStartupStatus();
 void SetStartupStatus(bool status);
 void ShowInitialToastNotification();
-void ShowToastNotification(std::wstring_view titleText, std::wstring_view messageText, int expireSeconds, std::wstring_view extraText = {});
+void ShowToastNotification(std::wstring_view titleText, std::wstring_view messageText, int expireSeconds, ToastActivation activation, std::wstring_view extraText = {});
 void ShowCascadeExplanationToast();
 void SetDisplayStatusSafe(const DeviceInformation& device, std::wstring_view status, DevicePickerDisplayStatusOptions options);
 std::wstring FormatWorkerError(DWORD exitCode);
@@ -70,6 +73,30 @@ size_t CountConnected()
 		}
 	}
 	return count;
+}
+
+// 旗標型參數（沒有跟隨值），例如 --show。
+bool HasArg(PCWSTR name)
+{
+	int argc = 0;
+	auto argv = CommandLineToArgvW(GetCommandLineW(), &argc);
+	if (!argv)
+	{
+		return false;
+	}
+
+	bool found = false;
+	for (int i = 1; i < argc; ++i)
+	{
+		if (_wcsicmp(argv[i], name) == 0)
+		{
+			found = true;
+			break;
+		}
+	}
+
+	LocalFree(argv);
+	return found;
 }
 
 bool TryGetArgValue(PCWSTR name, std::wstring& value)
@@ -484,6 +511,32 @@ int APIENTRY wWinMain(_In_ HINSTANCE hInstance,
 		return RunWorkerProcess(workerDeviceId, stopEventName, connectedEventName, parentPid);
 	}
 
+	/* --show：請已經在執行的實例叫出選單，然後自己退出。必須擋在單一實例檢查之前，
+	*  否則會跳「已經在執行中」的警告對話框。
+	*  這是給通知點擊用的中繼路徑：Windows 的通知啟動只能「啟動一個程式」，沒辦法直接
+	*  叫醒既有行程，所以由新行程轉發一則訊息再結束。 */
+	if (HasArg(L"--show"))
+	{
+		auto existing = FindWindowW(L"AudioPlaybackConnector", nullptr);
+		if (!existing)
+		{
+			return EXIT_FAILURE; // 沒有在執行，沒有選單可叫
+		}
+
+		/* 關鍵的一步：前景視窗有系統層級的搶佔限制，既有實例自己呼叫
+		*  SetForegroundWindow 會被靜默忽略（選單會彈出但拿不到焦點、點旁邊不會關）。
+		*  我們這個行程是使用者點擊通知而被啟動的，具備前景權限，可以把它讓渡出去。 */
+		DWORD targetPid = 0;
+		GetWindowThreadProcessId(existing, &targetPid);
+		if (targetPid != 0)
+		{
+			LOG_IF_WIN32_BOOL_FALSE(AllowSetForegroundWindow(targetPid));
+		}
+
+		LOG_IF_WIN32_BOOL_FALSE(PostMessageW(existing, WM_SHOWPICKER, 0, 0));
+		return EXIT_SUCCESS;
+	}
+
 	// Prevent multiple instances
 	g_hMutex = CreateMutexW(nullptr, FALSE, L"Local\\AudioPlaybackConnector_Mutex");
 	if (GetLastError() == ERROR_ALREADY_EXISTS)
@@ -568,6 +621,7 @@ int APIENTRY wWinMain(_In_ HINSTANCE hInstance,
 
 	LoadTranslateData();
 	LoadSettings();
+	EnsureProtocolRegistered();
 	SetupFlyout();
 	SetupMenu();
 	SetupDevicePicker();
@@ -694,30 +748,8 @@ LRESULT CALLBACK WndProc(HWND hWnd, UINT message, WPARAM wParam, LPARAM lParam)
 		{
 		case NIN_SELECT:
 		case NIN_KEYSELECT:
-		{
-			using namespace winrt::Windows::UI::Popups;
-
-			RECT iconRect;
-			auto hr = Shell_NotifyIconGetRect(&g_niid, &iconRect);
-			if (FAILED(hr))
-			{
-				LOG_HR(hr);
-				break;
-			}
-
-			auto dpi = GetDpiForWindow(hWnd);
-			Rect rect = {
-				static_cast<float>(iconRect.left * USER_DEFAULT_SCREEN_DPI / dpi),
-				static_cast<float>(iconRect.top * USER_DEFAULT_SCREEN_DPI / dpi),
-				static_cast<float>((iconRect.right - iconRect.left) * USER_DEFAULT_SCREEN_DPI / dpi),
-				static_cast<float>((iconRect.bottom - iconRect.top) * USER_DEFAULT_SCREEN_DPI / dpi)
-			};
-
-			SetWindowPos(hWnd, HWND_TOPMOST, 0, 0, GetSystemMetrics(SM_CXSCREEN), GetSystemMetrics(SM_CYSCREEN), SWP_HIDEWINDOW);
-			SetForegroundWindow(hWnd);
-			g_devicePicker.Show(rect, Placement::Above);
-		}
-		break;
+			ShowDevicePicker(hWnd);
+			break;
 		case WM_RBUTTONUP: // Menu activated by mouse click
 			g_menuFocusState = FocusState::Pointer;
 			break;
@@ -740,6 +772,10 @@ LRESULT CALLBACK WndProc(HWND hWnd, UINT message, WPARAM wParam, LPARAM lParam)
 		}
 		break;
 		}
+		break;
+	case WM_SHOWPICKER:
+		// 外部要求（點擊通知）叫出裝置清單，與左鍵點擊工作列圖示等效。
+		ShowDevicePicker(hWnd);
 		break;
 	case WM_DEVICESELECTED:
 	{
@@ -1355,6 +1391,81 @@ void UpdateNotifyIcon()
 	}
 }
 
+// 把裝置清單開在工作列圖示上方。左鍵點擊圖示和點擊通知都走這裡，兩條路必須一致，
+// 所以只留這一份。
+void ShowDevicePicker(HWND hWnd)
+{
+	using namespace winrt::Windows::UI::Popups;
+
+	RECT iconRect;
+	auto hr = Shell_NotifyIconGetRect(&g_niid, &iconRect);
+	if (FAILED(hr))
+	{
+		LOG_HR(hr);
+		return;
+	}
+
+	auto dpi = GetDpiForWindow(hWnd);
+	Rect rect = {
+		static_cast<float>(iconRect.left * USER_DEFAULT_SCREEN_DPI / dpi),
+		static_cast<float>(iconRect.top * USER_DEFAULT_SCREEN_DPI / dpi),
+		static_cast<float>((iconRect.right - iconRect.left) * USER_DEFAULT_SCREEN_DPI / dpi),
+		static_cast<float>((iconRect.bottom - iconRect.top) * USER_DEFAULT_SCREEN_DPI / dpi)
+	};
+
+	SetWindowPos(hWnd, HWND_TOPMOST, 0, 0, GetSystemMetrics(SM_CXSCREEN), GetSystemMetrics(SM_CYSCREEN), SWP_HIDEWINDOW);
+	SetForegroundWindow(hWnd);
+	g_devicePicker.Show(rect, Placement::Above);
+}
+
+/* 通知被點擊時，Windows 能做的只有「啟動一個程式」，沒辦法直接叫醒既有行程。所以
+*  註冊 audioplaybackconnector: 這個通訊協定指向自己，被啟動的新行程用 --show 把訊息
+*  轉發給既有實例後隨即退出。
+*
+*  寫在 HKCU\Software\Classes 底下，不需要管理員權限。每次啟動比對一次命令列，內容
+*  相同就不動註冊表；exe 被搬到別的位置時也會自動修正，否則舊路徑會讓點擊通知變成
+*  「無法開啟連結」。 */
+void EnsureProtocolRegistered()
+{
+	try
+	{
+		const auto command = L"\"" + GetModuleFsPath(g_hInst).wstring() + L"\" --show \"%1\"";
+
+		wil::unique_hkey hCommandKey;
+		if (RegOpenKeyExW(HKEY_CURRENT_USER, PROTOCOL_COMMAND_KEY, 0, KEY_READ, &hCommandKey) == ERROR_SUCCESS)
+		{
+			wchar_t existing[MAX_PATH * 2] = {};
+			DWORD size = sizeof(existing);
+			DWORD type = 0;
+			if (RegQueryValueExW(hCommandKey.get(), nullptr, nullptr, &type, reinterpret_cast<LPBYTE>(existing), &size) == ERROR_SUCCESS &&
+				type == REG_SZ && command == existing)
+			{
+				return; // 已經是正確的，不必重寫
+			}
+		}
+
+		wil::unique_hkey hProtocolKey;
+		THROW_IF_WIN32_ERROR(RegCreateKeyExW(HKEY_CURRENT_USER, PROTOCOL_KEY, 0, nullptr,
+			REG_OPTION_NON_VOLATILE, KEY_WRITE, nullptr, &hProtocolKey, nullptr));
+
+		// 預設值是說明文字；"URL Protocol" 這個空值才是讓 shell 認得它是通訊協定的關鍵。
+		const std::wstring description = L"URL:AudioPlaybackConnector";
+		THROW_IF_WIN32_ERROR(RegSetValueExW(hProtocolKey.get(), nullptr, 0, REG_SZ,
+			reinterpret_cast<const BYTE*>(description.c_str()),
+			static_cast<DWORD>((description.size() + 1) * sizeof(wchar_t))));
+		THROW_IF_WIN32_ERROR(RegSetValueExW(hProtocolKey.get(), L"URL Protocol", 0, REG_SZ,
+			reinterpret_cast<const BYTE*>(L""), sizeof(wchar_t)));
+
+		wil::unique_hkey hNewCommandKey;
+		THROW_IF_WIN32_ERROR(RegCreateKeyExW(HKEY_CURRENT_USER, PROTOCOL_COMMAND_KEY, 0, nullptr,
+			REG_OPTION_NON_VOLATILE, KEY_WRITE, nullptr, &hNewCommandKey, nullptr));
+		THROW_IF_WIN32_ERROR(RegSetValueExW(hNewCommandKey.get(), nullptr, 0, REG_SZ,
+			reinterpret_cast<const BYTE*>(command.c_str()),
+			static_cast<DWORD>((command.size() + 1) * sizeof(wchar_t))));
+	}
+	CATCH_LOG(); // 註冊失敗只代表點擊通知沒有反應，不該影響程式啟動
+}
+
 bool GetStartupStatus()
 {
 	auto exePath = GetModuleFsPath(g_hInst);
@@ -1397,8 +1508,10 @@ void SetStartupStatus(bool status)
 
 void ShowInitialToastNotification()
 {
+	// 這則通知的用途就是指向工作列圖示，點下去直接給裝置清單剛好接上使用者的意圖。
 	ShowToastNotification(_(L"AudioPlaybackConnector"),
-		_(L"Application has started and is running in the notification area."), 5);
+		_(L"Application has started and is running in the notification area."), 5,
+		ToastActivation::ShowPicker);
 }
 
 // 斷開任何一台裝置都會讓其他裝置跟著斷線（系統的 A2DP sink 只有一份），這對使用者
@@ -1416,20 +1529,28 @@ void ShowCascadeExplanationToast()
 	// 每行都要短：ToastGeneric 的彈出視窗只給標題一行加兩行內文，寫長了會被截掉。
 	// 「已經幫你接回來了」標題就講完了，內文只留「為什麼」和「怎麼關掉」。
 	// 秒數給得比啟動通知長，這段字是要讀的，不是瞄一眼就好。
+	// 純粹告知已經發生的事，沒有需要使用者去做的動作，所以點擊不帶任何行為。
 	ShowToastNotification(_(L"Other devices have been reconnected"),
 		_(L"Windows drops all Bluetooth audio devices when one is disconnected."), 30,
+		ToastActivation::None,
 		_(L"You can turn this off from the tray menu."));
 }
 
-void ShowToastNotification(std::wstring_view titleText, std::wstring_view messageText, int expireSeconds, std::wstring_view extraText)
+void ShowToastNotification(std::wstring_view titleText, std::wstring_view messageText, int expireSeconds, ToastActivation activation, std::wstring_view extraText)
 {
 	try
 	{
 		std::wstring title(titleText);
 		std::wstring message(messageText);
 
+		// 沒有動作時就不要宣告 activationType/launch。留著會讓點擊去啟動通訊協定，
+		// 對純告知的通知來說是無關的行為。
 		std::wstring toastXmlString =
-			L"<toast activationType=\"protocol\" launch=\"audioplaybackconnector:show\">"
+			activation == ToastActivation::ShowPicker
+			? L"<toast activationType=\"protocol\" launch=\"audioplaybackconnector:show\">"
+			: L"<toast>";
+
+		toastXmlString +=
 			L"<visual>"
 			L"<binding template=\"ToastGeneric\">"
 			L"<text>" + title + L"</text>"

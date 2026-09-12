@@ -22,6 +22,20 @@ constexpr UINT WM_DISCONNECTDEVICE = WM_APP + 4;
 constexpr UINT WM_WORKERCONNECTED = WM_APP + 5;
 constexpr UINT WM_WORKEREXITED = WM_APP + 6;
 constexpr UINT WM_CLEARSTALESTATUS = WM_APP + 7;
+constexpr UINT WM_SHOWPICKER = WM_APP + 8; // 外部要求叫出裝置清單（--show 中繼過來的）
+
+// 通知被點擊時要做什麼。不是每則通知都該有動作：純粹告知結果的通知（例如連帶斷線
+// 說明）點下去跳出裝置清單並不合理，那和它講的事情無關。
+enum class ToastActivation
+{
+	None,       // 點擊只會關閉通知
+	ShowPicker, // 點擊叫出裝置清單
+};
+
+// 點擊通知走的通訊協定。ShowPicker 的 XML 用 launch="audioplaybackconnector:show"，
+// 這裡的機碼要跟那個配對，否則點下去只會得到「無法開啟連結」。
+constexpr PCWSTR PROTOCOL_KEY = L"Software\\Classes\\audioplaybackconnector";
+constexpr PCWSTR PROTOCOL_COMMAND_KEY = L"Software\\Classes\\audioplaybackconnector\\shell\\open\\command";
 
 HANDLE g_hMutex = nullptr;
 HINSTANCE g_hInst;
