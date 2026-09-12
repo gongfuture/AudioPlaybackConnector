@@ -179,6 +179,7 @@ std::vector<std::wstring> g_pendingAutoReconnect;
 bool g_autoReconnectOnApproach = false;
 DeviceWatcher g_proximityWatcher{ nullptr };
 winrt::event_token g_proximityUpdatedToken{};
+winrt::event_token g_proximityAddedToken{};
 // AEP 的 IsConnected 屬性。回調在線程池上，只打包 PostMessage，不碰別的狀態。
 struct ProximityPayload
 {

@@ -1208,6 +1208,7 @@ void SetupMenu()
 
 	FontIcon approachCheckedIcon, approachUncheckedIcon;
 	approachCheckedIcon.Glyph(L"ç3E");
+	approachUncheckedIcon.Glyph(L"ç39"); // 空勾選框；空 Glyph 會渲染成方塊
 
 	MenuFlyoutItem approachItem;
 	approachItem.Text(_(L"Reconnect devices when they come back in range"));
@@ -1372,17 +1373,32 @@ void SetupProximityWatcher()
 		properties.Append(L"System.Devices.Aep.IsConnected");
 
 		g_proximityWatcher = DeviceInformation::CreateWatcher(BluetoothDevice::GetDeviceSelector(), properties);
-		g_proximityUpdatedToken = g_proximityWatcher.Updated([](const DeviceWatcher&, const DeviceInformationUpdate& update) {
+
+		// Updated 之外還要處理 Added：手機關/開藍牙後 AEP 常走「移除→重新加入」，
+		// 只盯 Updated 會漏掉「回來」這一步（真機實測踩過）。
+		auto onArrived = [](const DeviceWatcher&, const DeviceInformation& device) {
 			bool connected = false;
-			if (auto v = update.Properties().TryLookup(L"System.Devices.Aep.IsConnected"))
+			if (auto v = device.Properties().TryLookup(L"System.Devices.Aep.IsConnected"))
 				connected = winrt::unbox_value_or<bool>(v, false);
 			if (!connected)
 				return; // 走遠時系統自己斷鏈路，這裡沒有事可做
 			auto payload = std::make_unique<ProximityPayload>();
+			payload->aepId = std::wstring(device.Id());
+			payload->connected = true;
+			PostPayload(WM_PROXIMITYCHANGED, std::move(payload));
+			};
+		g_proximityAddedToken = g_proximityWatcher.Added(onArrived);
+		g_proximityUpdatedToken = g_proximityWatcher.Updated([onArrived](const DeviceWatcher&, const DeviceInformationUpdate& update) {
+			bool connected = false;
+			if (auto v = update.Properties().TryLookup(L"System.Devices.Aep.IsConnected"))
+				connected = winrt::unbox_value_or<bool>(v, false);
+			if (!connected)
+				return;
+			auto payload = std::make_unique<ProximityPayload>();
 			payload->aepId = std::wstring(update.Id());
 			payload->connected = true;
 			PostPayload(WM_PROXIMITYCHANGED, std::move(payload));
-		});
+			});
 		g_proximityWatcher.Start();
 	}
 	catch (winrt::hresult_error const&)
