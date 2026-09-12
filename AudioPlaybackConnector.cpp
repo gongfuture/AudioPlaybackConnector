@@ -110,19 +110,29 @@ bool TryGetArgValue(PCWSTR name, std::wstring& value)
 *  目標端點出現在結果裡就等於激活。端點的 Name 是「<裝置名稱> A2DP SNK」，
 *  Hands-Free 端點裝置名稱也會出現，所以多比對「A2DP SNK」字樣。
 *  列舉失敗時選擇放行：驗證是防禦性的，不能因為驗證機制本身故障就讓所有連線失敗。 */
-bool WaitForA2dpEndpointActive(const std::wstring& deviceName, DWORD timeoutMs)
+bool WaitForA2dpEndpointActive(const std::wstring& deviceMac, DWORD timeoutMs)
 {
 	const auto deadline = GetTickCount64() + timeoutMs;
+	auto properties = winrt::single_threaded_vector<winrt::hstring>();
+	properties.Append(L"System.Devices.DeviceInstanceId");
 	while (true)
 	{
 		try
 		{
-			auto endpoints = DeviceInformation::FindAllAsync(DeviceClass::AudioCapture).get();
+			// DeviceClass 列舉只回報激活中的端點；用 DeviceInstanceId 裡的藍牙 MAC
+			// 對號入座（形如 BTHENUM\DEV_A888CE26E2BE...），比名稱前綴匹配可靠——
+			// 實機測試發現名稱匹配會漏（端點激活了卻報未激活，見提交資訊）。
+			auto endpoints = DeviceInformation::FindAllAsync(L"System.Devices.InterfaceClassGuid:=\"{e6327cad-dcec-4949-ae8a-991e976a79d2}\"", properties).get();
 			for (uint32_t i = 0; i < endpoints.Size(); ++i)
 			{
-				auto name = std::wstring(endpoints.GetAt(i).Name());
-				if (name.find(deviceName) != std::wstring::npos && name.find(L"A2DP SNK") != std::wstring::npos)
-					return true;
+				auto d = endpoints.GetAt(i);
+				if (auto v = d.Properties().TryLookup(L"System.Devices.DeviceInstanceId"))
+				{
+					auto instanceId = std::wstring(winrt::unbox_value_or<winrt::hstring>(v, L""));
+					std::transform(instanceId.begin(), instanceId.end(), instanceId.begin(), towlower);
+					if (instanceId.find(deviceMac) != std::wstring::npos)
+						return true;
+				}
 			}
 		}
 		catch (winrt::hresult_error const&)
@@ -216,17 +226,16 @@ int RunWorkerProcess(std::wstring_view deviceId, std::wstring_view stopEventName
 		{
 			// 端點驗證放最前面：驗證不過就不要回報連線成功，上層才會走重試，
 			// 使用者看到的是「失敗」而不是一條不會出聲的假連線。
-			std::wstring deviceName;
-			try
+			// 從 deviceId 抓 12 位 MAC（BTHENUM 介面 id 的 _C00000000 之前那段）
+			std::wstring deviceMac;
 			{
-				deviceName = DeviceInformation::CreateFromIdAsync(deviceId).get().Name();
-			}
-			catch (winrt::hresult_error const&)
-			{
-				LOG_CAUGHT_EXCEPTION(); // 拿不到名稱就跳過驗證
+				const auto sep = deviceId.find(L"_C00000000");
+				if (sep != std::wstring::npos && sep >= 12)
+					deviceMac = deviceId.substr(sep - 12, 12);
+				std::transform(deviceMac.begin(), deviceMac.end(), deviceMac.begin(), towlower);
 			}
 
-			if (!deviceName.empty() && !WaitForA2dpEndpointActive(deviceName, 8000))
+			if (!deviceMac.empty() && !WaitForA2dpEndpointActive(deviceMac, 30000))
 			{
 				DebugLog(L"worker: endpoint NOT active -> APC_E_ENDPOINT_NOT_ACTIVE");
 				result = LOG_HR(APC_E_ENDPOINT_NOT_ACTIVE);
@@ -952,7 +961,10 @@ LRESULT CALLBACK WndProc(HWND hWnd, UINT message, WPARAM wParam, LPARAM lParam)
 			{
 				++attempts;
 				g_pendingAutoReconnect.push_back(deviceId);
-				SetTimer(hWnd, TIMER_AUTORECONNECT, AUTORECONNECT_DELAY_MS, nullptr);
+				// 端點激活（或系統收拾上一條連線）需要時間，實測 2.5s 的立即重試
+				// 大概率還在楔住窗口裡，拉長到 10s 再試。
+				SetTimer(hWnd, TIMER_AUTORECONNECT,
+					static_cast<HRESULT>(exitCode) == APC_E_ENDPOINT_NOT_ACTIVE ? 10000 : AUTORECONNECT_DELAY_MS, nullptr);
 				SetDisplayStatusSafe(device, _(L"Connecting"), DevicePickerDisplayStatusOptions::ShowProgress);
 				UpdateNotifyIcon();
 				break;

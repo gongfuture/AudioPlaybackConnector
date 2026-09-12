@@ -83,3 +83,21 @@
 - 楔住狀態跨重啟是否還在？（若 AudioEndpointBuilder 持久化壞狀態則重啟才修。）
 - 真實「走遠」場景（無線電不關）是否同樣出現這兩種失效？本實驗只能用無線電開關近似。
 - Windows.Media.Devices.dll+0x52c89 的崩潰值得留一份帶符號的轉儲回饋給微軟。
+
+## 真機驗證補充（2026-09-12 晚，用戶實測）
+
+用戶在真機（手機關/開藍牙模擬中斷）測試：三次重連都報
+"Connected, but the audio endpoint is not ready"，但**第二次重連時實際已有聲音**。
+
+結論修正：
+
+1. 名稱匹配的端點檢查會**誤報**——端點已激活（有聲音）但
+   `endpoint.Name().find(deviceName)` 沒命中（FriendlyName 的空格/形式與
+   DeviceInformation.Name 不一致）。已改為 **MAC 匹配**：端點的
+   `System.Devices.DeviceInstanceId`（BTHENUM\DEV_<MAC>...）對 worker deviceId
+   裡解析出的 12 位 MAC，大小寫歸一後比对。這個匹配不依賴顯示名稱。
+2. 端點激活可能超過 8 秒，等待窗口放寬到 30 秒。
+3. 端點失敗的重試間隔從 2.5s 拉長到 10s（連續立刻重試都在楔住窗口裡）。
+4. 無線電級中斷（實驗室重現手法）造成的楔住仍然頑固：崩潰與 UNPLUGGED 反覆出現，
+   手機側 `svc bluetooth disable/enable` 也清不掉。真實「走遠」場景較溫和，
+   重試即可恢復（用戶實測第 2 次有聲音）。
