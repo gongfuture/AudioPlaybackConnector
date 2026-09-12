@@ -1,2 +1,4 @@
-six>=1.14.0
-translate-toolkit
+# Needed to run build_translations.py.
+# Not needed to build the project: the generated .ymo and translate.rc are committed,
+# and the MSBuild step that regenerates them only warns if it cannot run.
+polib>=1.2.0

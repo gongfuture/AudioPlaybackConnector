@@ -339,4 +339,16 @@ ASALocalRun/
 # BeatPulse healthcheck temp database
 healthchecksdb
 
-translate/generated
+# Translation build output. The .rc and .ymo are committed on purpose: the whole
+# directory used to be ignored, which meant a fresh clone had no .ymo at all and the
+# application silently ran untranslated. Committing them keeps a plain clone building
+# with translations even without Python; build_translations.py regenerates them
+# automatically for anyone who has it.
+translate/generated/*
+!translate/generated/translate.rc
+!translate/generated/*.ymo
+
+# Local scratch from the old translate-toolkit based pipeline
+translate/translate-master/
+translate/.venv/
+translate/__pycache__/

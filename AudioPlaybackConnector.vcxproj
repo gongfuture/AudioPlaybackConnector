@@ -387,6 +387,22 @@
     <Import Project="packages\Microsoft.Windows.CppWinRT.2.0.200602.3\build\native\Microsoft.Windows.CppWinRT.targets" Condition="Exists('packages\Microsoft.Windows.CppWinRT.2.0.200602.3\build\native\Microsoft.Windows.CppWinRT.targets')" />
     <Import Project="packages\Microsoft.Windows.ImplementationLibrary.1.0.200519.2\build\native\Microsoft.Windows.ImplementationLibrary.targets" Condition="Exists('packages\Microsoft.Windows.ImplementationLibrary.1.0.200519.2\build\native\Microsoft.Windows.ImplementationLibrary.targets')" />
   </ImportGroup>
+  <!-- Rebuild the .ymo translation resources when a .po changes. The generated files are
+       committed, so this is an optimisation for maintainers rather than a build
+       requirement: without Python and polib the build still succeeds using what is in
+       the tree, which is why a failure here only warns. Run translate\build_translations.py by
+       hand to see the real output, or pass the check flag to list untranslated strings. -->
+  <ItemGroup>
+    <TranslationSource Include="translate\source\*.po" />
+    <TranslationSource Include="translate\build_translations.py" />
+  </ItemGroup>
+  <Target Name="BuildTranslations" BeforeTargets="ResourceCompile" Inputs="@(TranslationSource)" Outputs="translate\generated\translate.rc">
+    <Message Importance="high" Text="Rebuilding translation resources from .po files" />
+    <!-- Bare "py", not "py -3": the launcher's default is the interpreter the developer
+         actually uses, and therefore the one they pip installed polib into. Pinning a
+         version silently picks a different install on machines with several. -->
+    <Exec Command="py build_translations.py || python build_translations.py" WorkingDirectory="$(ProjectDir)translate" ContinueOnError="WarnAndContinue" />
+  </Target>
   <Target Name="EnsureNuGetPackageBuildImports" BeforeTargets="PrepareForBuild">
     <PropertyGroup>
       <ErrorText>This project references NuGet package(s) that are missing on this computer. Use NuGet Package Restore to download them.  For more information, see http://go.microsoft.com/fwlink/?LinkID=322105. The missing file is {0}.</ErrorText>

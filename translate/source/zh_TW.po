@@ -7,7 +7,7 @@ msgid ""
 msgstr ""
 "Project-Id-Version: AudioPlaybackConnector\n"
 "Report-Msgid-Bugs-To: \n"
-"POT-Creation-Date: 2020-07-06 19:07+0800\n"
+"POT-Creation-Date: 2026-08-20 10:48+0800\n"
 "PO-Revision-Date: 2020-07-06 19:07+0800\n"
 "Last-Translator: Richard Yu <yurichard3839@gmail.com>\n"
 "Language-Team: \n"
@@ -18,97 +18,123 @@ msgstr ""
 "X-Generator: Poedit 2.3.1\n"
 "Plural-Forms: nplurals=1; plural=0;\n"
 
-#: AudioPlaybackConnector.cpp:39
+#: AudioPlaybackConnector.cpp:340
+msgid "The connection was closed by the system"
+msgstr "連線已被系統關閉"
+
+#: AudioPlaybackConnector.cpp:342 AudioPlaybackConnector.cpp:348
+#: AudioPlaybackConnector.cpp:356 AudioPlaybackConnector.cpp:1254
+msgid "Unknown error"
+msgstr "未知錯誤"
+
+#: AudioPlaybackConnector.cpp:344
+msgid "The request timed out"
+msgstr "要求逾時"
+
+#: AudioPlaybackConnector.cpp:346
+msgid "The operation was denied by the system"
+msgstr "系統拒絕動作"
+
+#: AudioPlaybackConnector.cpp:496
+msgid "Already running!"
+msgstr "已經在執行中！"
+
+#: AudioPlaybackConnector.cpp:496
+msgid ""
+"AudioPlaybackConnector is already running in background.\r\n"
+"Check system tray."
+msgstr ""
+"AudioPlaybackConnector 已經在背景執行。\r\n"
+"請查看系統匣。"
+
+#: AudioPlaybackConnector.cpp:540
 msgid "Unsupported Operating System"
 msgstr "作業系統不支援"
 
-#: AudioPlaybackConnector.cpp:39
-msgid "AudioPlaybackConnector is not supported on this operating system version."
+#: AudioPlaybackConnector.cpp:540
+msgid ""
+"AudioPlaybackConnector is not supported on this operating system version."
 msgstr "AudioPlaybackConnector 不支援此作業系統版本。"
 
-#: AudioPlaybackConnector.cpp:75
+#: AudioPlaybackConnector.cpp:577 AudioPlaybackConnector.cpp:1400
 msgid "AudioPlaybackConnector"
 msgstr ""
 
-#: AudioPlaybackConnector.cpp:196
+#: AudioPlaybackConnector.cpp:811 AudioPlaybackConnector.cpp:1238
+msgid "Disconnecting"
+msgstr "中斷連線中"
+
+#: AudioPlaybackConnector.cpp:829 AudioPlaybackConnector.cpp:1229
+msgid "Connected"
+msgstr "已連線"
+
+#: AudioPlaybackConnector.cpp:891
+msgid "Reconnecting"
+msgstr "重新連線中"
+
+#: AudioPlaybackConnector.cpp:898
+msgid "Closed by the system (another device was disconnected)"
+msgstr "已被系統關閉（中斷其他裝置所致）"
+
+#: AudioPlaybackConnector.cpp:965
 msgid ""
 "All connections will be closed.\n"
 "Exit anyway?"
 msgstr ""
 "將會關閉所有連線。\n"
-"執意結束?"
+"確定結束?"
 
-#: AudioPlaybackConnector.cpp:201
+#: AudioPlaybackConnector.cpp:970
 msgid "Reconnect on next start"
 msgstr "下次啟動時重新連線"
 
-#: AudioPlaybackConnector.cpp:204 AudioPlaybackConnector.cpp:240
+#: AudioPlaybackConnector.cpp:973 AudioPlaybackConnector.cpp:1170
 msgid "Exit"
 msgstr "結束"
 
-#: AudioPlaybackConnector.cpp:230
-msgid "Bluetooth Settings"
-msgstr "藍牙設定"
-
-#: AudioPlaybackConnector.cpp:287
-msgid "Connecting"
-msgstr "連線中"
-
-#: AudioPlaybackConnector.cpp:676 AudioPlaybackConnector.cpp:921
-msgid "Disconnecting"
-msgstr "中斷連線中"
-
-#: AudioPlaybackConnector.cpp:322
-msgid "Reconnecting"
-msgstr "重新連線中"
-
-#: AudioPlaybackConnector.cpp:322
-msgid "Reconnect devices dropped by another disconnect"
-msgstr "自動接回被連帶中斷的裝置"
-
-#: AudioPlaybackConnector.cpp:322
-msgid "Closed by the system (another device was disconnected)"
-msgstr "已被系統關閉（中斷其他裝置所致）"
-
-#: AudioPlaybackConnector.cpp:322
-msgid "Other devices have been reconnected"
-msgstr "其他裝置已自動重新連線"
-
-#: AudioPlaybackConnector.cpp:322
-msgid "Windows drops all Bluetooth audio devices when one is disconnected."
-msgstr "在 Windows 上中斷任何一台藍牙音訊裝置，其他裝置都會跟著斷線。"
-
-#: AudioPlaybackConnector.cpp:322
-msgid "You can turn this off from the tray menu."
-msgstr "可在右鍵選單關閉這個行為。"
-
-#: AudioPlaybackConnector.cpp:322
+#: AudioPlaybackConnector.cpp:1018
 msgid ""
 "Windows can only act as a Bluetooth speaker for one connection at a time, so "
 "disconnecting any device also drops the others. This is a Windows "
 "limitation, not a bug. When this is on, the dropped devices are reconnected "
 "automatically after a few seconds."
 msgstr ""
-"Windows 一次只能以一條連線扮演藍牙喇叭，所以中斷任何一台裝置，其他裝置都會跟著"
-"斷線。這是 Windows 的限制，不是程式的問題。開啟這個選項時，被連帶中斷的裝置會"
-"在幾秒後自動重新連線。"
+"由於 Windows 驅動的設計缺陷，多裝置連線的情況下中斷任何一台裝置，其他裝置都會"
+"跟著斷線。這是 Windows 的限制，不是軟體的問題。啟用此選項時，被連帶中斷的裝置"
+"會在幾秒後自動重新連線。"
 
-#: AudioPlaybackConnector.cpp:322
-msgid "The connection was closed by the system"
-msgstr "連線已被系統關閉"
+#: AudioPlaybackConnector.cpp:1086
+msgid "Bluetooth Settings"
+msgstr "藍牙設定"
 
-#: AudioPlaybackConnector.cpp:322
-msgid "The request timed out"
-msgstr "要求逾時"
+#: AudioPlaybackConnector.cpp:1096
+msgid "Run at login"
+msgstr "開機時自動啟動"
 
-#: AudioPlaybackConnector.cpp:326
-msgid "The operation was denied by the system"
-msgstr "系統拒絕動作"
+#: AudioPlaybackConnector.cpp:1119
+msgid "Show startup notification"
+msgstr "顯示啟動通知"
 
-#: AudioPlaybackConnector.cpp:337
-msgid "Unknown error"
-msgstr "未知錯誤"
+#: AudioPlaybackConnector.cpp:1144
+msgid "Reconnect devices dropped by another disconnect"
+msgstr "自動重連被系統斷線的裝置"
 
-#: AudioPlaybackConnector.cpp:362
-msgid "Connected"
-msgstr "已連線"
+#: AudioPlaybackConnector.cpp:1232 AudioPlaybackConnector.cpp:1249
+msgid "Connecting"
+msgstr "連線中"
+
+#: AudioPlaybackConnector.cpp:1401
+msgid "Application has started and is running in the notification area."
+msgstr "應用程式已啟動，正在通知區域中執行。"
+
+#: AudioPlaybackConnector.cpp:1419
+msgid "Other devices have been reconnected"
+msgstr "其他裝置已自動重新連線"
+
+#: AudioPlaybackConnector.cpp:1420
+msgid "Windows drops all Bluetooth audio devices when one is disconnected."
+msgstr "在 Windows 上中斷任何一台藍牙音訊裝置，其他裝置都會跟著斷線。"
+
+#: AudioPlaybackConnector.cpp:1421
+msgid "You can turn this off from the tray menu."
+msgstr "可在右鍵選單關閉這個行為。"

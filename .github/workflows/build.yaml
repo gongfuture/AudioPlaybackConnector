@@ -30,23 +30,12 @@ jobs:
     - name: Configure Git to use HTTPS
       run: git config --global url."https://github.com/".insteadOf git://github.com/
     
-    - name: Generate resources
+    - name: Regenerate translation resources
       shell: pwsh
       run: |
-        cd translate
-        pip install -r requirements.txt
-        python po2ymo.py ./source/zh_CN.po ./generated/zh_CN.ymo
-        python po2ymo.py ./source/zh_TW.po ./generated/zh_TW.ymo
-        @"
-        #include "../../targetver.h"
-        #include "windows.h"
-        
-        LANGUAGE LANG_CHINESE, SUBLANG_CHINESE_SIMPLIFIED
-        1 YMO "zh_CN.ymo"
-        
-        LANGUAGE LANG_CHINESE, SUBLANG_CHINESE_TRADITIONAL
-        1 YMO "zh_TW.ymo"
-        "@ | Out-File -FilePath ./generated/translate.rc -Encoding utf8
+        pip install -r translate/requirements.txt
+        python translate/build_translations.py --check
+        python translate/build_translations.py
 
     - name: Restore NuGet packages
       run: nuget restore AudioPlaybackConnector.sln
