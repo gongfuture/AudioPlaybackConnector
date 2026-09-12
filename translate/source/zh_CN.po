@@ -63,6 +63,9 @@ msgid "Reconnecting"
 msgstr "正在重新连接"
 
 #: AudioPlaybackConnector.cpp:322
+msgid "Control phone playback over Bluetooth"
+msgstr "通过蓝牙控制手机播放"
+
 msgid "Reconnect devices dropped by another disconnect"
 msgstr "自动接回被连带中断的设备"
 

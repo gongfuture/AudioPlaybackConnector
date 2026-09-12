@@ -1,6 +1,7 @@
 #pragma warning(disable:4819)
 #include "pch.h"
 #include "AudioPlaybackConnector.h"
+#include "HidRemote.hpp"
 
 LRESULT CALLBACK WndProc(HWND, UINT, WPARAM, LPARAM);
 void SetupFlyout();
@@ -10,6 +11,7 @@ void ConnectDevice(const DeviceInformation& device);
 winrt::fire_and_forget ConnectDeviceById(std::wstring deviceId);
 winrt::fire_and_forget ClearStaleDisplayStatusAsync();
 void SetupDevicePicker();
+void SetupHidRemote();
 void SetupSvgIcon();
 void UpdateNotifyIcon();
 bool GetStartupStatus();
@@ -571,11 +573,15 @@ int APIENTRY wWinMain(_In_ HINSTANCE hInstance,
 	SetupFlyout();
 	SetupMenu();
 	SetupDevicePicker();
+	SetupHidRemote();
 	SetupSvgIcon();
 
 	g_nid.hWnd = g_niid.hWnd = g_hWnd;
 	wcscpy_s(g_nid.szTip, _(L"AudioPlaybackConnector"));
 	UpdateNotifyIcon();
+
+	if (g_forwardMediaKeys)
+		HidRemoteSetForwarding(true); // 恢復上次的開關狀態（開始廣播+掛鉤子）
 
 	WM_TASKBAR_CREATED = RegisterWindowMessageW(L"TaskbarCreated");
 	LOG_LAST_ERROR_IF(WM_TASKBAR_CREATED == 0);
@@ -611,6 +617,8 @@ LRESULT CALLBACK WndProc(HWND hWnd, UINT message, WPARAM wParam, LPARAM lParam)
 	{
 	case WM_DESTROY:
 	{
+		ShutdownHidRemote();
+
 		if (g_reconnect)
 		{
 			SaveSettings();
@@ -1163,7 +1171,29 @@ void SetupMenu()
 	// 說明提示的整套行為獨立在這裡，要移除的話刪掉這一行就好。
 	AttachAutoReconnectTooltip(autoReconnectItem, menu);
 
-	FontIcon closeIcon;
+	FontIcon forwardCheckedIcon;
+	forwardCheckedIcon.Glyph(L"\xE73E");
+
+	MenuFlyoutItem forwardItem;
+	forwardItem.Text(_(L"Control phone playback over Bluetooth"));
+	if (g_forwardMediaKeys) {
+		forwardItem.Icon(forwardCheckedIcon);
+	}
+	forwardItem.Click([forwardCheckedIcon](const auto& sender, const auto&) {
+		MenuFlyoutItem self = sender.as<MenuFlyoutItem>();
+		g_forwardMediaKeys = !g_forwardMediaKeys;
+		HidRemoteSetForwarding(g_forwardMediaKeys);
+		if (g_forwardMediaKeys) {
+			self.Icon(forwardCheckedIcon);
+		}
+		else {
+			self.Icon(nullptr);
+		}
+		SaveSettings();
+		});
+	menu.Items().Append(forwardItem);
+
+		FontIcon closeIcon;
 	closeIcon.Glyph(L"\xE8BB");
 
 	MenuFlyoutItem exitItem;

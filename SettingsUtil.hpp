@@ -3,10 +3,31 @@
 constexpr auto CONFIG_NAME = L"AudioPlaybackConnector.json";
 constexpr auto BUFFER_SIZE = 4096;
 
+// 研究用日誌：連線與 HID 遙控鏈路的每一步追加到 %TEMP%pc_debug.log。
+void DebugLog(std::wstring_view line)
+{
+	try
+	{
+		wil::unique_hfile hFile(CreateFileW((fs::temp_directory_path() / L"apc_debug.log").c_str(),
+			FILE_APPEND_DATA, FILE_SHARE_READ | FILE_SHARE_WRITE, nullptr, OPEN_ALWAYS, FILE_ATTRIBUTE_NORMAL, nullptr));
+		if (!hFile)
+			return;
+		SYSTEMTIME st{};
+		GetLocalTime(&st);
+		wchar_t stamp[64]{};
+		swprintf_s(stamp, L"[%02u:%02u:%02u.%03u pid=%lu] ", st.wHour, st.wMinute, st.wSecond, st.wMilliseconds, GetCurrentProcessId());
+		const std::wstring out = stamp + std::wstring(line) + L"\r\n";
+		DWORD written = 0;
+		WriteFile(hFile.get(), out.c_str(), static_cast<DWORD>(out.size() * sizeof(wchar_t)), &written, nullptr);
+	}
+	CATCH_LOG();
+}
+
 void DefaultSettings()
 {
 	g_reconnect = false;
 	g_showNotification = true;
+	g_forwardMediaKeys = false;
 	g_autoReconnectOthers = true;
 	g_cascadeExplained = false;
 	g_lastDevices.clear();
@@ -40,6 +61,9 @@ void LoadSettings()
 		if (jsonObj.HasKey(L"showNotification"))
 			g_showNotification = jsonObj.Lookup(L"showNotification").GetBoolean();
 
+		if (jsonObj.HasKey(L"forwardMediaKeys"))
+			g_forwardMediaKeys = jsonObj.Lookup(L"forwardMediaKeys").GetBoolean();
+
 		if (jsonObj.HasKey(L"autoReconnectOthers"))
 			g_autoReconnectOthers = jsonObj.Lookup(L"autoReconnectOthers").GetBoolean();
 
@@ -64,6 +88,7 @@ void SaveSettings()
 		JsonObject jsonObj;
 		jsonObj.Insert(L"reconnect", JsonValue::CreateBooleanValue(g_reconnect));
 		jsonObj.Insert(L"showNotification", JsonValue::CreateBooleanValue(g_showNotification));
+		jsonObj.Insert(L"forwardMediaKeys", JsonValue::CreateBooleanValue(g_forwardMediaKeys));
 		jsonObj.Insert(L"autoReconnectOthers", JsonValue::CreateBooleanValue(g_autoReconnectOthers));
 		jsonObj.Insert(L"cascadeExplained", JsonValue::CreateBooleanValue(g_cascadeExplained));
 

@@ -145,6 +145,8 @@ std::vector<std::wstring> g_lastDevices;
 *  這是平台限制，繞不過去（三種拆除方式都試過，見 RunWorkerProcess 的說明）。
 *  能做的只有事後補救：使用者主動斷開某台之後，若其他「原本連著」的裝置在短時間內
 *  被連帶關掉，就自動把它們接回來。使用者感受到的是那幾台中斷幾秒後自己恢復。 */
+// 藍牙 HID 遙控：媒體鍵轉發給手機（開關在右鍵菜單，實現在 HidRemote.hpp）
+bool g_forwardMediaKeys = false;
 bool g_autoReconnectOthers = true;
 // 連帶斷線的說明只跳一次，之後永久記住已經說過了。
 bool g_cascadeExplained = false;
