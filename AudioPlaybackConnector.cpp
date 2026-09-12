@@ -1206,26 +1206,23 @@ void SetupMenu()
 		SaveSettings();
 		});
 
-	FontIcon approachCheckedIcon, approachUncheckedIcon;
+	FontIcon approachCheckedIcon;
 	approachCheckedIcon.Glyph(L"ç3E");
-	approachUncheckedIcon.Glyph(L"ç39"); // 空勾選框；空 Glyph 會渲染成方塊
 
 	MenuFlyoutItem approachItem;
 	approachItem.Text(_(L"Reconnect devices when they come back in range"));
 	if (g_autoReconnectOnApproach) {
 		approachItem.Icon(approachCheckedIcon);
 	}
-	else {
-		approachItem.Icon(approachUncheckedIcon);
-	}
-	approachItem.Click([approachCheckedIcon, approachUncheckedIcon](const auto& sender, const auto&) {
+	// 未選中就不放圖標（空著），與「顯示啟動通知」等項的視覺習慣一致
+	approachItem.Click([approachCheckedIcon](const auto& sender, const auto&) {
 		MenuFlyoutItem self = sender.as<MenuFlyoutItem>();
 		g_autoReconnectOnApproach = !g_autoReconnectOnApproach;
 		if (g_autoReconnectOnApproach) {
 			self.Icon(approachCheckedIcon);
 		}
 		else {
-			self.Icon(approachUncheckedIcon);
+			self.Icon(nullptr);
 		}
 		SaveSettings();
 		});
