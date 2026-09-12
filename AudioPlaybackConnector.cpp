@@ -1207,7 +1207,7 @@ void SetupMenu()
 		});
 
 	FontIcon approachCheckedIcon;
-	approachCheckedIcon.Glyph(L"ç3E");
+	approachCheckedIcon.Glyph(L"\xE73E");
 
 	MenuFlyoutItem approachItem;
 	approachItem.Text(_(L"Reconnect devices when they come back in range"));
