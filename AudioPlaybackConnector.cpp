@@ -1137,7 +1137,7 @@ LRESULT CALLBACK WndProc(HWND hWnd, UINT message, WPARAM wParam, LPARAM lParam)
 			break;
 		if (std::find(g_pendingAutoReconnect.begin(), g_pendingAutoReconnect.end(), key) != g_pendingAutoReconnect.end())
 			break;
-		g_pendingAutoReconnect.push_back(key);
+		g_pendingAutoReconnect.push_back({ key, nullptr });
 		SetTimer(hWnd, TIMER_AUTORECONNECT, AUTORECONNECT_DELAY_MS, nullptr);
 	}
 	break;
