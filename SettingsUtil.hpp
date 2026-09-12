@@ -3,6 +3,28 @@
 constexpr auto CONFIG_NAME = L"AudioPlaybackConnector.json";
 constexpr auto BUFFER_SIZE = 4096;
 
+// 研究用日誌：把連線鏈路的每一步（設置載入、裝置解析、worker 啟動/退出）追加到
+// %TEMP%pc_debug.log，用來定位「系統中斷後重連無聲」問題時的實際執行路徑。
+// 純研究分支用，進主線前應移除（或改回 OutputDebugString）。
+void DebugLog(std::wstring_view line)
+{
+	try
+	{
+		wil::unique_hfile hFile(CreateFileW((fs::temp_directory_path() / L"apc_debug.log").c_str(),
+			FILE_APPEND_DATA, FILE_SHARE_READ | FILE_SHARE_WRITE, nullptr, OPEN_ALWAYS, FILE_ATTRIBUTE_NORMAL, nullptr));
+		if (!hFile)
+			return;
+		SYSTEMTIME st{};
+		GetLocalTime(&st);
+		wchar_t stamp[64]{};
+		swprintf_s(stamp, L"[%02u:%02u:%02u.%03u pid=%lu] ", st.wHour, st.wMinute, st.wSecond, st.wMilliseconds, GetCurrentProcessId());
+		const std::wstring out = stamp + std::wstring(line) + L"\r\n";
+		DWORD written = 0;
+		WriteFile(hFile.get(), out.c_str(), static_cast<DWORD>(out.size() * sizeof(wchar_t)), &written, nullptr);
+	}
+	CATCH_LOG();
+}
+
 void DefaultSettings()
 {
 	g_reconnect = false;
@@ -35,7 +57,7 @@ void LoadSettings()
 
 		std::wstring utf16 = Utf8ToUtf16(string);
 		auto jsonObj = JsonObject::Parse(utf16);
-		g_reconnect = jsonObj.Lookup(L"reconnect").GetBoolean();
+	g_reconnect = jsonObj.Lookup(L"reconnect").GetBoolean();
 
 		if (jsonObj.HasKey(L"showNotification"))
 			g_showNotification = jsonObj.Lookup(L"showNotification").GetBoolean();
@@ -53,8 +75,19 @@ void LoadSettings()
 			if (i.ValueType() == JsonValueType::String)
 				g_lastDevices.push_back(std::wstring(i.GetString()));
 		}
+		DebugLog(L"LoadSettings: parsed ok, reconnect=" + std::wstring(g_reconnect ? L"true" : L"false") +
+			L" lastDevices=" + std::to_wstring(g_lastDevices.size()));
 	}
-	CATCH_LOG();
+	catch (winrt::hresult_error const& e)
+	{
+		DebugLog(L"LoadSettings: FAILED 0x" + std::to_wstring(static_cast<uint32_t>(e.code().value)));
+		LOG_CAUGHT_EXCEPTION();
+	}
+	catch (...)
+	{
+		DebugLog(L"LoadSettings: FAILED (unknown exception)");
+		LOG_CAUGHT_EXCEPTION();
+	}
 }
 
 void SaveSettings()
