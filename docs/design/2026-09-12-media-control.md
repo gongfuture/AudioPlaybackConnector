@@ -53,3 +53,17 @@ Android 原生路由給當前媒體會話（後台也生效）。截獲 Windows 
 WM_APPCOMMAND 全局鉤子，寫進 HID report 即可。
 
 「顯示手機曲目」方向（手機 → PC）仍然沒有任何通道：AVRCP 元數據不出棧。
+
+## 社區檢索結論（2026-09-12）
+
+GitHub 無先例：搜遍 AVRCP/metadata 相關倉庫與代碼，沒有任何項目成功從 Windows
+棧中攔截 sink 連接的 AVRCP 元數據；同類項目（AkiLink、bluetooth_audio_cli）均
+只有音頻傳輸，無媒體信息功能。唯一帶 AVRCP 元數據回調的開源實現在嵌入式側
+（ESP32-A2DP、ESP-IDF esp_avrc、樹莓派 BlueZ）——它們自己實現了整個棧。
+
+Stack Overflow 72441918（與本需求完全相同的提問）的採納答案是藍牙團隊的官方
+回覆：「我們諮詢了藍牙團隊，目前 Windows 不支持此類控制」，建議去 Feedback Hub
+提功能請求。結論就此封板：
+
+- 元數據顯示（手機 → PC）：公開與未公開接口都沒有已知的可用途徑。
+- 播放控制（PC → 手機）：唯一無安裝路徑仍是 BLE HID Consumer Control。
